@@ -46,7 +46,7 @@ export interface HealthResponse {
   uptimeSeconds: number;
 }
 
-// ─── Client Options ──────────────────────────────────────────────
+// ─── Client Options (Modified) ──────────────────────────────────────────────
 
 /** Configuration options for the Wotp client. */
 export interface WotpClientOptions {
@@ -70,4 +70,32 @@ export interface APIErrorResponse {
   error?: string;
   attempts_remaining?: number;
   message?: string;
+}
+
+// ─── Messages & Chats Types ────────────────────────────────────────
+
+export interface SendTextRequest {
+  phone: string;
+  type: 'text';
+  text: string;
+}
+
+export interface SendMediaRequest {
+  phone: string;
+  type: 'media';
+  url?: string;
+  base64?: string;
+  caption?: string;
+}
+
+export interface MessageResponse {
+  success: boolean;
+  messageId?: string;
+}
+
+export interface Chat {
+  id: string;
+  name?: string;
+  unreadCount?: number;
+  timestamp?: number;
 }

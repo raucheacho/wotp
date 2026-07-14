@@ -15,6 +15,7 @@ type Event struct {
 	MessageID string    `json:"message_id,omitempty"`
 	Error     string    `json:"error,omitempty"`
 	At        time.Time `json:"at"`
+	Data      any       `json:"data,omitempty"`
 }
 
 // Event types matching spec §6.3.
@@ -23,6 +24,7 @@ const (
 	EventMessageDelivered  = "message.delivered"
 	EventMessageRead       = "message.read"
 	EventMessageFailed     = "message.failed"
+	EventMessageReceived   = "message.received"
 	EventSessionDisconnect = "session.disconnected"
 	EventSessionReconnect  = "session.reconnected"
 )
@@ -30,6 +32,12 @@ const (
 // SendResult holds the result of sending a WhatsApp message.
 type SendResult struct {
 	MessageID string
+}
+
+// Chat holds basic chat information.
+type Chat struct {
+	JID  string `json:"jid"`
+	Name string `json:"name"`
 }
 
 // Client is the interface for WhatsApp operations.
@@ -42,6 +50,12 @@ type Client interface {
 
 	// SendMessage sends a text message to the given phone number.
 	SendMessage(ctx context.Context, phone, message string) (*SendResult, error)
+
+	// SendMedia sends a media message to the given phone number.
+	SendMedia(ctx context.Context, phone, url, base64Data, caption string) (*SendResult, error)
+
+	// GetChats returns a list of existing chats.
+	GetChats(ctx context.Context) ([]Chat, error)
 
 	// IsConnected returns true if the client is currently connected to WhatsApp.
 	IsConnected() bool

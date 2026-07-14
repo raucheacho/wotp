@@ -13,7 +13,7 @@ from .errors import (
     RateLimitError,
     WotpError,
 )
-from .types import HealthResponse, SendOTPResponse, VerifyOTPResponse
+from .types import HealthResponse, SendOTPResponse, VerifyOTPResponse, MessageResponse, Chat
 
 _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_RETRY_DELAY = 0.5  # seconds
@@ -114,6 +114,26 @@ class WotpClient:
         """
         data = self._request("GET", "/health")
         return HealthResponse.model_validate(data)
+
+
+    def send_text(self, phone: str, text: str) -> MessageResponse:
+        """Send a text message."""
+        data = self._request("POST", "/v1/messages/send", json={"phone": phone, "type": "text", "text": text})
+        return MessageResponse.model_validate(data)
+
+    def send_media(self, phone: str, url: str | None = None, base64: str | None = None, caption: str | None = None) -> MessageResponse:
+        """Send a media message."""
+        payload = {"phone": phone, "type": "media"}
+        if url: payload["url"] = url
+        if base64: payload["base64"] = base64
+        if caption: payload["caption"] = caption
+        data = self._request("POST", "/v1/messages/send", json=payload)
+        return MessageResponse.model_validate(data)
+
+    def get_chats(self) -> list[Chat]:
+        """List all chats."""
+        data = self._request("GET", "/v1/chats")
+        return [Chat.model_validate(c) for c in data]
 
     # ─── Internal ────────────────────────────────────────────────
 

@@ -286,3 +286,37 @@ func (c *Client) sleep(attempt int) {
 	delay := c.retryDelay * (1 << attempt)
 	time.Sleep(delay)
 }
+
+// SendText sends a text message.
+func (c *Client) SendText(ctx context.Context, phone, text string) (*MessageResponse, error) {
+	body := SendTextRequest{Phone: phone, Type: "text", Text: text}
+	var resp MessageResponse
+
+	if err := c.doRequest(ctx, http.MethodPost, "/v1/messages/send", body, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+// SendMedia sends a media message.
+func (c *Client) SendMedia(ctx context.Context, phone string, media SendMediaRequest) (*MessageResponse, error) {
+	media.Phone = phone
+	media.Type = "media"
+	var resp MessageResponse
+
+	if err := c.doRequest(ctx, http.MethodPost, "/v1/messages/send", media, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+// GetChats lists all chats.
+func (c *Client) GetChats(ctx context.Context) ([]Chat, error) {
+	var resp []Chat
+	if err := c.doRequest(ctx, http.MethodGet, "/v1/chats", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}

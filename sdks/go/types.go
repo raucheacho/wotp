@@ -55,3 +55,31 @@ type apiErrorResponse struct {
 	AttemptsRemaining *int   `json:"attempts_remaining,omitempty"`
 	Message           string `json:"message,omitempty"`
 }
+
+// ─── Messages & Chats ─────────────────────────────────────────────
+
+type SendTextRequest struct {
+	Phone string `json:"phone"`
+	Type  string `json:"type"`
+	Text  string `json:"text"`
+}
+
+type SendMediaRequest struct {
+	Phone   string `json:"phone"`
+	Type    string `json:"type"`
+	URL     string `json:"url,omitempty"`
+	Base64  string `json:"base64,omitempty"`
+	Caption string `json:"caption,omitempty"`
+}
+
+type MessageResponse struct {
+	Success   bool   `json:"success"`
+	MessageID string `json:"messageId,omitempty"`
+}
+
+type Chat struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	UnreadCount int    `json:"unreadCount,omitempty"`
+	Timestamp   int64  `json:"timestamp,omitempty"`
+}

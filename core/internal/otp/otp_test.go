@@ -104,6 +104,14 @@ func (m *memStore) DeleteAPIKeysByTier(_ context.Context, tier string) error {
 	return nil
 }
 
+func (m *memStore) GetRecentOTPs(_ context.Context, limit int) ([]store.OTPRequest, error) {
+	var out []store.OTPRequest
+	for _, r := range m.otps {
+		out = append(out, *r)
+	}
+	return out, nil
+}
+
 func (m *memStore) Close() error { return nil }
 
 // --- Tests ---

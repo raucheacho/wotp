@@ -47,3 +47,19 @@ class HealthResponse(BaseModel):
     )
 
     model_config = {"populate_by_name": True}
+
+class MessageResponse(BaseModel):
+    """Response from sending a message."""
+    success: bool
+    messageId: str | None = Field(default=None, alias="messageId")
+
+    model_config = {"populate_by_name": True}
+
+class Chat(BaseModel):
+    """Chat object representation."""
+    id: str
+    name: str | None = None
+    unreadCount: int | None = Field(default=None, alias="unreadCount")
+    timestamp: int | None = None
+
+    model_config = {"populate_by_name": True}

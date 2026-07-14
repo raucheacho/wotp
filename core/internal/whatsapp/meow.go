@@ -25,18 +25,20 @@ type MeowClient struct {
 	events      chan Event
 	phoneNumber string
 	deviceName  string
-	backoff     []int
-	mu           sync.RWMutex
-	connected    bool
-	reconnecting bool
+	backoff        []int
+	simulateTyping bool
+	mu             sync.RWMutex
+	connected      bool
+	reconnecting   bool
 }
 
 // MeowConfig holds configuration for the whatsmeow client.
 type MeowConfig struct {
-	DBPath     string
-	DeviceName string
-	Backoff    []int
-	Logger     *slog.Logger
+	DBPath         string
+	DeviceName     string
+	Backoff        []int
+	Logger         *slog.Logger
+	SimulateTyping bool
 }
 
 // NewMeowClient creates a new whatsmeow-based WhatsApp client.
@@ -54,9 +56,10 @@ func NewMeowClient(cfg MeowConfig) (*MeowClient, error) {
 	return &MeowClient{
 		container:  container,
 		logger:     cfg.Logger,
-		events:     make(chan Event, 256),
-		deviceName: cfg.DeviceName,
-		backoff:    cfg.Backoff,
+		events:         make(chan Event, 256),
+		deviceName:     cfg.DeviceName,
+		backoff:        cfg.Backoff,
+		simulateTyping: cfg.SimulateTyping,
 	}, nil
 }
 
@@ -134,6 +137,12 @@ func (m *MeowClient) SendMessage(ctx context.Context, phone, message string) (*S
 		}
 	}
 	jid := types.NewJID(cleanPhone, types.DefaultUserServer)
+
+	if m.simulateTyping {
+		_ = m.client.SendChatPresence(ctx, jid, types.ChatPresenceComposing, types.ChatPresenceMediaText)
+		time.Sleep(2 * time.Second)
+		_ = m.client.SendChatPresence(ctx, jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
+	}
 
 	resp, err := m.client.SendMessage(ctx, jid, &waE2E.Message{
 		Conversation: proto.String(message),
@@ -231,6 +240,28 @@ func (m *MeowClient) handleEvent(rawEvt interface{}) {
 			At:   time.Now().UTC(),
 		})
 		m.logger.Info("whatsapp reconnected")
+	case *events.Message:
+		// Only capture incoming text messages for now or all messages.
+		var text string
+		if evt.Message.GetConversation() != "" {
+			text = evt.Message.GetConversation()
+		} else if evt.Message.GetExtendedTextMessage() != nil {
+			text = evt.Message.GetExtendedTextMessage().GetText()
+		}
+		
+		data := map[string]interface{}{
+			"text": text,
+			"pushName": evt.Info.PushName,
+			"sender": evt.Info.Sender.String(),
+		}
+
+		m.emitEvent(Event{
+			Type:      EventMessageReceived,
+			Phone:     evt.Info.Sender.User,
+			MessageID: evt.Info.ID,
+			At:        evt.Info.Timestamp,
+			Data:      data,
+		})
 	}
 }
 

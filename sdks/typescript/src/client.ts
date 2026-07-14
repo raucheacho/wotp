@@ -6,6 +6,10 @@ import type {
   WotpClientOptions,
   SendOTPResponse,
   VerifyOTPResponse,
+  SendTextRequest,
+  SendMediaRequest,
+  MessageResponse,
+  Chat,
   HealthResponse,
   APIErrorResponse,
 } from './types';
@@ -109,6 +113,39 @@ export class WotpClient {
       phone: data.phone,
       uptimeSeconds: data.uptime_seconds,
     };
+  }
+
+  
+  /**
+   * Send a text message to the given phone number.
+   */
+  async sendText(phone: string, text: string): Promise<MessageResponse> {
+    const data = await this.request<MessageResponse>('POST', '/v1/messages/send', {
+      phone,
+      type: 'text',
+      text,
+    });
+    return data;
+  }
+
+  /**
+   * Send a media message to the given phone number.
+   */
+  async sendMedia(phone: string, media: { url?: string; base64?: string; caption?: string }): Promise<MessageResponse> {
+    const data = await this.request<MessageResponse>('POST', '/v1/messages/send', {
+      phone,
+      type: 'media',
+      ...media,
+    });
+    return data;
+  }
+
+  /**
+   * List all chats.
+   */
+  async getChats(): Promise<Chat[]> {
+    const data = await this.request<Chat[]>('GET', '/v1/chats');
+    return data;
   }
 
   // ─── Internal ────────────────────────────────────────────────

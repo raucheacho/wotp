@@ -36,6 +36,18 @@ func main() {
 
     // Verify the code entered by the user
     result, err := client.VerifyOTP(context.Background(), resp.Token, "483920")
+
+	// Send a text message
+	textRes, err := client.SendText(ctx, "+212600000000", "Hello world")
+
+	// Send a media message
+	mediaRes, err := client.SendMedia(ctx, "+212600000000", wotp.SendMediaRequest{
+		URL: "https://example.com/image.png",
+	})
+
+	// List chats
+	chats, err := client.GetChats(ctx)
+
     if err != nil {
         log.Fatal(err)
     }

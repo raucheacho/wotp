@@ -17,6 +17,8 @@ type Config struct {
 	WhatsApp  WhatsAppConfig  `toml:"whatsapp"`
 	Storage   StorageConfig   `toml:"storage"`
 	Templates TemplatesConfig `toml:"templates"`
+	Messaging MessagingConfig `toml:"messaging"`
+	Webhooks  WebhooksConfig  `toml:"webhooks"`
 }
 
 // ProjectConfig holds project identification.
@@ -55,6 +57,19 @@ type TemplatesConfig struct {
 	DefaultLocale string `toml:"default_locale"`
 }
 
+// MessagingConfig holds general messaging settings.
+type MessagingConfig struct {
+	MaxMessagesPerMinute int  `toml:"max_messages_per_minute"`
+	SimulateTyping       bool `toml:"simulate_typing"`
+}
+
+// WebhooksConfig holds webhook settings.
+type WebhooksConfig struct {
+	Endpoint string   `toml:"endpoint"`
+	Events   []string `toml:"events"`
+	Secret   string   `toml:"secret"`
+}
+
 // DefaultConfig returns a Config with spec-compliant defaults for the given project name and ref.
 func DefaultConfig(projectName, projectRef string) Config {
 	return Config{
@@ -81,6 +96,15 @@ func DefaultConfig(projectName, projectRef string) Config {
 		},
 		Templates: TemplatesConfig{
 			DefaultLocale: "fr",
+		},
+		Messaging: MessagingConfig{
+			MaxMessagesPerMinute: 60,
+			SimulateTyping:       false,
+		},
+		Webhooks: WebhooksConfig{
+			Endpoint: "",
+			Events:   []string{},
+			Secret:   "",
 		},
 	}
 }

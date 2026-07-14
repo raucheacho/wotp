@@ -23,6 +23,7 @@ import (
 	"github.com/wotp/core/internal/otp"
 	"github.com/wotp/core/internal/store"
 	"github.com/wotp/core/internal/templates"
+	"github.com/wotp/core/internal/webhooks"
 	"github.com/wotp/core/internal/whatsapp"
 	"github.com/wotp/core/internal/ws"
 )
@@ -39,6 +40,13 @@ type Server struct {
 	startTime time.Time
 	latestQR  string // latest QR code string for rendering
 	qrMu      sync.RWMutex
+
+	webhooks *webhooks.Service
+
+	// basic global rate limiter
+	msgCount  int
+	msgWindow time.Time
+	msgMu     sync.Mutex
 }
 
 // NewServer creates a new API server with all dependencies.
@@ -60,6 +68,7 @@ func NewServer(
 		wsHub:     wsHub,
 		logger:    logger,
 		startTime: time.Now(),
+		webhooks:  webhooks.NewService(cfg.Webhooks),
 	}
 }
 
@@ -132,6 +141,8 @@ func (s *Server) Router() *chi.Mux {
 		r.Use(s.authMiddleware(keys.TierAnon, keys.TierService))
 		r.Post("/otp/send", s.handleOTPSend)
 		r.Post("/otp/verify", s.handleOTPVerify)
+		r.Post("/v1/messages/send", s.handleMessagesSend)
+		r.Get("/v1/chats", s.handleChats)
 	})
 
 	return r
@@ -378,6 +389,8 @@ func (s *Server) StartEventForwarder(ctx context.Context) {
 			if !ok {
 				return
 			}
+			s.webhooks.ProcessEvent(evt)
+			
 			s.wsHub.Broadcast(ws.Event{
 				Type:      evt.Type,
 				Phone:     evt.Phone,

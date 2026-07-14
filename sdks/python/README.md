@@ -24,6 +24,16 @@ print(f"Token: {resp.token}, expires at: {resp.expires_at}")
 
 # Verify the code entered by the user
 result = client.verify_otp(resp.token, "483920")
+
+# Send a text message
+text_res = client.send_text("+212600000000", "Hello world")
+
+# Send a media message
+media_res = client.send_media("+212600000000", url="https://example.com/image.png")
+
+# List chats
+chats = client.get_chats()
+
 print(f"Verified: {result.verified}")
 ```
 

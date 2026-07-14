@@ -273,3 +273,42 @@ func TestFunctionalOptions(t *testing.T) {
 		t.Errorf("expected retryDelay 1s, got %v", client.retryDelay)
 	}
 }
+
+func TestSendText_Success(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/v1/messages/send" {
+			t.Errorf("expected /v1/messages/send, got %s", r.URL.Path)
+		}
+
+		var body SendTextRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if body.Phone != "+212600000000" {
+			t.Errorf("expected phone '+212600000000', got '%s'", body.Phone)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"success":   true,
+			"messageId": "msg_123",
+		})
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, WithApiKey("test-key"))
+	resp, err := client.SendText(context.Background(), "+212600000000", "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !resp.Success {
+		t.Error("expected success to be true")
+	}
+	if resp.MessageID != "msg_123" {
+		t.Errorf("expected msg_123, got '%s'", resp.MessageID)
+	}
+}

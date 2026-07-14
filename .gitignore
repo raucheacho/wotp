@@ -20,6 +20,8 @@ vendor/
 # Goreleaser & local builds
 dist/
 wotp-cli-*
+wotp-core
+wotp
 
 # ─── Node.js / React (Dashboard & TS SDK) ──────────────────────
 node_modules/
@@ -74,3 +76,5 @@ venv/
 # Local CLI test folders
 .wotp/
 data/
+
+inspiration/

@@ -2,10 +2,7 @@ version: 2
 
 project_name: wotp-cli
 
-before:
-  hooks:
-    - cmd: go mod tidy
-      dir: ./cli
+
 
 builds:
   - id: cli
@@ -49,7 +46,7 @@ changelog:
       - '^test:'
 
 # Homebrew tap publication
-homebrews:
+brews:
   - repository:
       owner: raucheacho
       name: homebrew-tap

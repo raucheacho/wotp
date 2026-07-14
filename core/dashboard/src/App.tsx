@@ -4,6 +4,9 @@ import { useStore } from './store';
 import { useWebSocket } from './hooks/useWebSocket';
 import type { WsEvent } from './types';
 
+import logoDark from './assets/logo_dark.svg';
+import logoLight from './assets/logo_light.svg';
+
 // Screens
 import OverviewScreen from './screens/OverviewScreen';
 import OtpEngineScreen from './screens/OtpEngineScreen';
@@ -42,12 +45,12 @@ const WebhookIcon = () => (
 
 function Sidebar() {
   const connectionStatus = useStore(state => state.connectionStatus);
+  const theme = useStore(state => state.theme);
   
   return (
     <aside className="flex flex-col h-full bg-secondary border-r w-[250px] shrink-0">
       <div className="p-6 flex items-center gap-3 border-b mb-4">
-        <div className="bg-primary text-primary-foreground w-8 h-8 rounded-lg flex items-center justify-center font-bold">w</div>
-        <div className="text-xl font-bold tracking-tight">wotp</div>
+        <img src={theme === 'dark' ? logoDark : logoLight} alt="Wotp Logo" className="h-8" />
       </div>
       
       <nav className="flex flex-col gap-1 px-4">
@@ -123,7 +126,7 @@ function Layout() {
   }, [setMessages]);
 
   const { status: wsStatus } = useWebSocket({
-    url: '/ws/events',
+    url: '/v1/ws/events',
     onMessage: (data: unknown) => {
       const event = data as WsEvent;
       if (event && event.type) {
@@ -143,7 +146,7 @@ function Layout() {
   useEffect(() => {
     const checkHealth = async () => {
       try {
-        const res = await fetch('/health');
+        const res = await fetch('/v1/health');
         if (res.ok) {
           const data = await res.json();
           setConnectionStatus(data.status || 'disconnected', data.phone);

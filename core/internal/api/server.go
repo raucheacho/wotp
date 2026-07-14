@@ -97,11 +97,11 @@ func (s *Server) Router() *chi.Mux {
 	}))
 
 	// Public endpoints
-	r.Get("/health", s.handleHealth)
-	r.Get("/qr", s.handleQR)
+	r.Get("/v1/health", s.handleHealth)
+	r.Get("/v1/qr", s.handleQR)
 
-	// WebSocket
-	r.Get("/ws/events", s.handleWebSocket)
+	// WebSocket for real-time events
+	r.Get("/v1/ws/events", s.handleWebSocket)
 
 	// Dashboard
 	if s.config.API.EnableDashboard {
@@ -142,8 +142,8 @@ func (s *Server) Router() *chi.Mux {
 	// Authenticated endpoints (anon or service key)
 	r.Group(func(r chi.Router) {
 		r.Use(s.authMiddleware(keys.TierAnon, keys.TierService))
-		r.Post("/otp/send", s.handleOTPSend)
-		r.Post("/otp/verify", s.handleOTPVerify)
+		r.Post("/v1/otp/send", s.handleOTPSend)
+		r.Post("/v1/otp/verify", s.handleOTPVerify)
 		r.Post("/v1/messages/send", s.handleMessagesSend)
 		r.Get("/v1/messages", s.handleGetMessages)
 		r.Get("/v1/chats", s.handleChats)

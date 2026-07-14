@@ -51,9 +51,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// Call the health endpoint
 	client := &http.Client{Timeout: 5 * time.Second}
-	url := fmt.Sprintf("http://localhost:%d/health", cfg.API.Port)
+	healthURL := fmt.Sprintf("http://localhost:%d/v1/health", cfg.API.Port)
 
-	resp, err := client.Get(url)
+	resp, err := client.Get(healthURL)
 	if err != nil {
 		ui.Blank()
 		ui.PrintStatus("unreachable", "", 0)

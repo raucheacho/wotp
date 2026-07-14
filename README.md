@@ -1,13 +1,13 @@
 <div align="center">
 
-# 🔐 Wotp
+# 🔐 Wotp (WhatsApp Open Tooling Platform)
 
-**WhatsApp OTP, self-hosted, one command.**
+**Your own WhatsApp API Gateway, self-hosted, one command.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build](https://img.shields.io/github/actions/workflow/status/wotp/wotp/ci.yml?branch=main)](https://github.com/wotp/wotp/actions)
 
-Your own WhatsApp OTP verification stack — API, dashboard, and SDKs in Go, TypeScript, and Python.
+Your own WhatsApp infrastructure — OTPs, Transactional Alerts, and Webhooks. Includes API, beautiful Dashboard, and SDKs in Go, TypeScript, and Python.
 
 </div>
 
@@ -102,6 +102,30 @@ curl -X POST http://localhost:54321/otp/verify \
 ```json
 { "verified": false, "error": "invalid_code", "attempts_remaining": 3 }
 ```
+
+### `POST /v1/messages/send`
+
+Send a generic transactional message (text or media) to a phone number.
+
+```bash
+curl -X POST http://localhost:54321/v1/messages/send \
+  -H "Content-Type: application/json" \
+  -H "apikey: wotp_anon_xxx" \
+  -d '{"phone": "+212600000000", "type": "text", "text": "Your order #1234 has shipped!"}'
+```
+
+```json
+{
+  "message_id": "3EB00436D840039D465DC3"
+}
+```
+
+### Webhooks & Inbound Messages 🔄
+
+Wotp supports **two-way communication**. You can configure a Webhook endpoint in your `config.toml` to instantly receive HTTP POST payloads when:
+- `message.received`: A user replies to your WhatsApp number (Perfect for connecting AI Support Agents like n8n/Make).
+- `message.sent`, `message.delivered`, `message.read`: Status updates for your OTPs and outbound messages.
+- `session.disconnected`: If your phone loses connection.
 
 ### `GET /health`
 
@@ -229,6 +253,10 @@ otp_message = "Your verification code: {{code}}. Valid for {{expiry}} minutes."
 
 [fr]
 otp_message = "Votre code de vérification : {{code}}. Valable {{expiry}} minutes."
+
+[magic_link]
+# You can use templates to send Magic Links instead of raw codes!
+otp_message = "Click here to securely login: https://your-app.com/verify?code={{code}}"
 ```
 
 ## 🗂️ Project Structure

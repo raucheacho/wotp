@@ -112,7 +112,7 @@ func (c *Client) SendOTP(ctx context.Context, phone string) (*SendOTPResponse, e
 		ExpiresAt string `json:"expires_at"`
 	}
 
-	if err := c.doRequest(ctx, http.MethodPost, "/otp/send", body, &raw); err != nil {
+	if err := c.doRequest(ctx, http.MethodPost, "/v1/otp/send", body, &raw); err != nil {
 		return nil, err
 	}
 
@@ -139,7 +139,7 @@ func (c *Client) VerifyOTP(ctx context.Context, token, code string) (*VerifyOTPR
 		AttemptsRemaining *int   `json:"attempts_remaining,omitempty"`
 	}
 
-	if err := c.doRequest(ctx, http.MethodPost, "/otp/verify", body, &raw); err != nil {
+	if err := c.doRequest(ctx, http.MethodPost, "/v1/otp/verify", body, &raw); err != nil {
 		return nil, err
 	}
 
@@ -153,7 +153,7 @@ func (c *Client) VerifyOTP(ctx context.Context, token, code string) (*VerifyOTPR
 // Health checks the health of the Wotp instance.
 func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 	var resp HealthResponse
-	if err := c.doRequest(ctx, http.MethodGet, "/health", nil, &resp); err != nil {
+	if err := c.doRequest(ctx, http.MethodGet, "/v1/health", nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

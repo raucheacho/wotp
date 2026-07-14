@@ -11,7 +11,7 @@ export default function QRScreen() {
   const setConnectionStatus = useStore(state => state.setConnectionStatus);
 
   useWebSocket({
-    url: '/ws/events',
+    url: '/v1/ws/events',
     onMessage: (data: unknown) => {
       const event = data as WsEvent;
       if (event.type === 'session.reconnected') {
@@ -26,7 +26,7 @@ export default function QRScreen() {
 
     const checkQr = async () => {
       try {
-        const res = await fetch('/api/otp/qr');
+        const res = await fetch('/v1/qr');
         if (!mounted) return;
         
         if (res.status === 200) {

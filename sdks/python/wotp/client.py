@@ -86,7 +86,7 @@ class WotpClient:
         Raises:
             RateLimitError: If the phone/IP has exceeded the rate limit.
         """
-        data = self._request("POST", "/otp/send", json={"phone": phone})
+        data = self._request("POST", "/v1/otp/send", json={"phone": phone})
         return SendOTPResponse.model_validate(data)
 
     def verify_otp(self, token: str, code: str) -> VerifyOTPResponse:
@@ -103,7 +103,7 @@ class WotpClient:
             ExpiredTokenError: If the token has expired.
             InvalidCodeError: If the code is incorrect.
         """
-        data = self._request("POST", "/otp/verify", json={"token": token, "code": code})
+        data = self._request("POST", "/v1/otp/verify", json={"token": token, "code": code})
         return VerifyOTPResponse.model_validate(data)
 
     def health(self) -> HealthResponse:
@@ -112,7 +112,7 @@ class WotpClient:
         Returns:
             Connection status, phone number, and uptime.
         """
-        data = self._request("GET", "/health")
+        data = self._request("GET", "/v1/health")
         return HealthResponse.model_validate(data)
 
 

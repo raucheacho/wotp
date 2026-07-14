@@ -64,7 +64,7 @@ export class WotpClient {
   async sendOTP(phone: string): Promise<SendOTPResponse> {
     const data = await this.request<{ token: string; expires_at: string }>(
       'POST',
-      '/otp/send',
+      '/v1/otp/send',
       { phone },
     );
     return {
@@ -87,7 +87,7 @@ export class WotpClient {
       verified: boolean;
       phone?: string;
       attempts_remaining?: number;
-    }>('POST', '/otp/verify', { token, code });
+    }>('POST', '/v1/otp/verify', { token, code });
 
     return {
       verified: data.verified,

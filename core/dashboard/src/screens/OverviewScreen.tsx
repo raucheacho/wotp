@@ -69,7 +69,7 @@ export default function OverviewScreen() {
         <h3 className="text-lg font-semibold mb-2">Quick Start</h3>
         <p className="text-muted-foreground text-sm mb-4">Send your first OTP via cURL:</p>
         <div className="bg-muted p-4 rounded-md font-mono text-sm text-foreground overflow-x-auto whitespace-pre">
-          {`curl -X POST http://localhost:8080/api/otp/send \\
+          {`curl -X POST http://localhost:54321/v1/otp/send \\
   -H "Content-Type: application/json" \\
   -d '{"phone":"+1234567890"}'`}
         </div>

@@ -14,8 +14,8 @@ func TestSendOTP_Success(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("expected POST, got %s", r.Method)
 		}
-		if r.URL.Path != "/otp/send" {
-			t.Errorf("expected /otp/send, got %s", r.URL.Path)
+		if r.URL.Path != "/v1/otp/send" {
+			t.Errorf("expected path /v1/otp/send, got %s", r.URL.Path)
 		}
 		if r.Header.Get("apikey") != "test-key" {
 			t.Errorf("expected apikey header 'test-key', got '%s'", r.Header.Get("apikey"))
@@ -55,6 +55,9 @@ func TestSendOTP_Success(t *testing.T) {
 
 func TestVerifyOTP_Success(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/otp/verify" {
+			t.Errorf("expected path /v1/otp/verify, got %s", r.URL.Path)
+		}
 		var body VerifyOTPRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
@@ -165,8 +168,8 @@ func TestHealth_Success(t *testing.T) {
 		if r.Method != http.MethodGet {
 			t.Errorf("expected GET, got %s", r.Method)
 		}
-		if r.URL.Path != "/health" {
-			t.Errorf("expected /health, got %s", r.URL.Path)
+		if r.URL.Path != "/v1/health" {
+			t.Errorf("expected path /v1/health, got %s", r.URL.Path)
 		}
 
 		w.Header().Set("Content-Type", "application/json")

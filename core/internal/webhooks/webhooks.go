@@ -2,6 +2,7 @@ package webhooks
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,8 +10,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/wotp/core/internal/config"
+	"github.com/wotp/core/internal/store"
 	"github.com/wotp/core/internal/whatsapp"
+	"github.com/wotp/core/internal/ws"
 )
 
 type WebhookPayload struct {
@@ -22,11 +27,15 @@ type WebhookPayload struct {
 type Service struct {
 	cfg        config.WebhooksConfig
 	httpClient *http.Client
+	store      store.Store
+	wsHub      *ws.Hub
 }
 
-func NewService(cfg config.WebhooksConfig) *Service {
+func NewService(cfg config.WebhooksConfig, st store.Store, wsHub *ws.Hub) *Service {
 	return &Service{
-		cfg: cfg,
+		cfg:   cfg,
+		store: st,
+		wsHub: wsHub,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -79,9 +88,38 @@ func (s *Service) sendWebhook(evt whatsapp.Event) {
 		req.Header.Set("X-Wotp-Signature", signature)
 	}
 
+	statusCode := 0
+	errMsg := ""
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return
+		errMsg = err.Error()
+	} else {
+		statusCode = resp.StatusCode
+		resp.Body.Close()
 	}
-	defer resp.Body.Close()
+
+	if s.store != nil {
+		log := &store.WebhookLog{
+			ID:         uuid.New().String(),
+			EventType:  evt.Type,
+			Payload:    string(body),
+			StatusCode: statusCode,
+			Error:      errMsg,
+			CreatedAt:  time.Now().UTC(),
+		}
+		// Using context.Background() as we are in a background goroutine
+		_ = s.store.SaveWebhookLog(context.Background(), log)
+	}
+
+	if s.wsHub != nil {
+		s.wsHub.Broadcast(ws.Event{
+			Type:       "webhook.event",
+			EventName:  evt.Type,
+			URL:        s.cfg.Endpoint,
+			Payload:    payload,
+			StatusCode: statusCode,
+			At:         time.Now().UTC().Format(time.RFC3339),
+		})
+	}
 }

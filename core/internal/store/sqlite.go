@@ -63,6 +63,24 @@ func (s *SQLiteStore) migrate() error {
 			created_at DATETIME NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON api_keys(key_prefix)`,
+		`CREATE TABLE IF NOT EXISTS generic_messages (
+			id           TEXT PRIMARY KEY,
+			phone        TEXT NOT NULL,
+			message_type TEXT NOT NULL,
+			content      TEXT NOT NULL,
+			status       TEXT NOT NULL DEFAULT 'pending',
+			error        TEXT,
+			created_at   DATETIME NOT NULL,
+			updated_at   DATETIME NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS webhook_logs (
+			id          TEXT PRIMARY KEY,
+			event_type  TEXT NOT NULL,
+			payload     TEXT NOT NULL,
+			status_code INTEGER NOT NULL,
+			error       TEXT,
+			created_at  DATETIME NOT NULL
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -119,6 +137,18 @@ func (s *SQLiteStore) UpdateOTPStatus(ctx context.Context, token string, status 
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite: update otp status: %w", err)
+	}
+	return nil
+}
+
+// UpdateOTPStatusByMessageID changes the status of an OTP request using its WhatsApp message ID.
+func (s *SQLiteStore) UpdateOTPStatusByMessageID(ctx context.Context, messageID string, status OTPStatus) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE otp_requests SET status = ? WHERE message_id = ?`,
+		status, messageID,
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: update otp status by message_id: %w", err)
 	}
 	return nil
 }
@@ -263,6 +293,103 @@ func (s *SQLiteStore) DeleteAPIKeysByTier(ctx context.Context, tier string) erro
 		return fmt.Errorf("sqlite: delete api keys by tier: %w", err)
 	}
 	return nil
+}
+
+// SaveGenericMessage inserts a new generic message record.
+func (s *SQLiteStore) SaveGenericMessage(ctx context.Context, msg *GenericMessage) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO generic_messages (id, phone, message_type, content, status, error, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.Phone, msg.MessageType, msg.Content, msg.Status, msg.Error,
+		msg.CreatedAt.UTC().Format(time.RFC3339), msg.UpdatedAt.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: save generic message: %w", err)
+	}
+	return nil
+}
+
+// UpdateGenericMessageStatus updates the status and error of a generic message.
+func (s *SQLiteStore) UpdateGenericMessageStatus(ctx context.Context, id string, status string, errStr string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE generic_messages SET status = ?, error = ?, updated_at = ? WHERE id = ?`,
+		status, errStr, time.Now().UTC().Format(time.RFC3339), id,
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: update generic message status: %w", err)
+	}
+	return nil
+}
+
+// GetGenericMessages retrieves the most recent generic messages.
+func (s *SQLiteStore) GetGenericMessages(ctx context.Context, limit int) ([]GenericMessage, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, phone, message_type, content, status, error, created_at, updated_at
+		 FROM generic_messages ORDER BY created_at DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: get generic messages: %w", err)
+	}
+	defer rows.Close()
+
+	var msgs []GenericMessage
+	for rows.Next() {
+		var msg GenericMessage
+		var createdAt, updatedAt string
+		var errStr sql.NullString
+		if err := rows.Scan(&msg.ID, &msg.Phone, &msg.MessageType, &msg.Content, &msg.Status, &errStr, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan generic message: %w", err)
+		}
+		if errStr.Valid {
+			msg.Error = errStr.String
+		}
+		msg.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		msg.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		msgs = append(msgs, msg)
+	}
+	return msgs, rows.Err()
+}
+
+// SaveWebhookLog inserts a new webhook log record.
+func (s *SQLiteStore) SaveWebhookLog(ctx context.Context, log *WebhookLog) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO webhook_logs (id, event_type, payload, status_code, error, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		log.ID, log.EventType, log.Payload, log.StatusCode, log.Error,
+		log.CreatedAt.UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("sqlite: save webhook log: %w", err)
+	}
+	return nil
+}
+
+// GetWebhookLogs retrieves the most recent webhook logs.
+func (s *SQLiteStore) GetWebhookLogs(ctx context.Context, limit int) ([]WebhookLog, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, event_type, payload, status_code, error, created_at
+		 FROM webhook_logs ORDER BY created_at DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: get webhook logs: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []WebhookLog
+	for rows.Next() {
+		var l WebhookLog
+		var createdAt string
+		var errStr sql.NullString
+		if err := rows.Scan(&l.ID, &l.EventType, &l.Payload, &l.StatusCode, &errStr, &createdAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan webhook log: %w", err)
+		}
+		if errStr.Valid {
+			l.Error = errStr.String
+		}
+		l.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		logs = append(logs, l)
+	}
+	return logs, rows.Err()
 }
 
 // Close closes the underlying database connection.

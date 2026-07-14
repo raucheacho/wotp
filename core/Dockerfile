@@ -1,15 +1,15 @@
 # ─── Stage 1: Build Dashboard ──────────────────────────────────────
-FROM node:22-alpine AS dashboard-builder
+FROM oven/bun:alpine AS dashboard-builder
 
 WORKDIR /app/dashboard
 
 # Install dependencies first (cache layer)
-COPY dashboard/package.json dashboard/package-lock.json* ./
-RUN npm ci --production=false
+COPY dashboard/package.json dashboard/bun.lockb* ./
+RUN bun install
 
 # Build static assets
 COPY dashboard/ ./
-RUN npm run build
+RUN bun run build
 
 # ─── Stage 2: Build Go Binary ─────────────────────────────────────
 FROM golang:alpine AS go-builder

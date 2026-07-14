@@ -34,6 +34,14 @@ type Event struct {
 	MessageID string `json:"message_id,omitempty"`
 	Error     string `json:"error,omitempty"`
 	At        string `json:"at"`
+	
+	// Extended fields for dashboard
+	MsgType    string      `json:"msgType,omitempty"`
+	Content    string      `json:"content,omitempty"`
+	EventName  string      `json:"event_name,omitempty"`
+	URL        string      `json:"url,omitempty"`
+	Payload    interface{} `json:"payload,omitempty"`
+	StatusCode int         `json:"status_code,omitempty"`
 }
 
 // Hub manages WebSocket connections and event broadcasting.

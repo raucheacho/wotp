@@ -38,6 +38,7 @@ type SendResult struct {
 type VerifyResult struct {
 	Verified          bool   `json:"verified"`
 	Phone             string `json:"phone,omitempty"`
+	MessageID         string `json:"message_id,omitempty"`
 	AttemptsRemaining int    `json:"attempts_remaining,omitempty"`
 }
 

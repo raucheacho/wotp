@@ -1,10 +1,12 @@
 import { create } from 'zustand';
-import type { ConnectionStatus, DashboardStats, LogEntry, OtpMessage, Theme, WsEvent } from './types';
+import type { ConnectionStatus, DashboardStats, LogEntry, OtpMessage, GenericMessage, WebhookEvent, Theme, WsEvent } from './types';
 
 export interface AppState {
   connectionStatus: ConnectionStatus;
   connectedPhone: string | null;
   messages: OtpMessage[];
+  genericMessages: GenericMessage[];
+  webhookEvents: WebhookEvent[];
   logs: LogEntry[];
   stats: DashboardStats;
   theme: Theme;
@@ -15,6 +17,8 @@ export interface AppState {
   setWsStatus: (status: 'connecting' | 'connected' | 'disconnected') => void;
   setTheme: (theme: Theme) => void;
   setMessages: (messages: any[]) => void;
+  setGenericMessages: (messages: GenericMessage[]) => void;
+  setWebhookEvents: (events: WebhookEvent[]) => void;
   addWsEvent: (event: WsEvent) => void;
   clearLogs: () => void;
 }
@@ -61,12 +65,18 @@ function formatEventLog(event: WsEvent): string {
   }
 }
 
+const mockGenericMessages: GenericMessage[] = [];
+
+const mockWebhookEvents: WebhookEvent[] = [];
+
 export const useStore = create<AppState>((set) => ({
   connectionStatus: 'connecting',
   connectedPhone: null,
   messages: [],
+  genericMessages: mockGenericMessages,
+  webhookEvents: mockWebhookEvents,
   logs: [],
-  stats: { messagesToday: 0, successRate: 100, avgResponseMs: 0 },
+  stats: { messagesToday: 0, successRate: 100, avgResponseMs: 0, activeWebhooks: 0, genericMessagesToday: 0 },
   theme: (localStorage.getItem('wotp-theme') as Theme) || 'dark',
   wsStatus: 'disconnected',
 
@@ -79,7 +89,11 @@ export const useStore = create<AppState>((set) => ({
 
   setTheme: (theme) => {
     localStorage.setItem('wotp-theme', theme);
-    document.documentElement.setAttribute('data-theme', theme);
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
     set({ theme });
   },
 
@@ -106,6 +120,18 @@ export const useStore = create<AppState>((set) => ({
     };
   }),
 
+  setGenericMessages: (apiMessages) => set({ 
+    genericMessages: apiMessages.map((m: any) => ({
+      id: m.id || m.message_id,
+      to: m.phone || m.to,
+      type: m.message_type || m.type || 'text',
+      content: m.content,
+      status: m.status,
+      sentAt: m.created_at || m.sentAt,
+    }))
+  }),
+  setWebhookEvents: (events) => set({ webhookEvents: events }),
+
   clearLogs: () => set({ logs: [] }),
 
   addWsEvent: (event) => set((state) => {
@@ -119,68 +145,49 @@ export const useStore = create<AppState>((set) => ({
     const newLogs = [...state.logs, logEntry].slice(-500);
 
     switch (event.type) {
-      case 'message.sent': {
-        const msg: OtpMessage = {
-          id: event.message_id || generateId(),
-          phone: event.phone || '',
-          code: event.code || '••••••',
-          status: 'sent',
-          messageId: event.message_id,
-          sentAt: event.at,
-        };
-        const newMessages = [msg, ...state.messages].slice(0, 200);
-        const todayCount = newMessages.filter(m => isToday(m.sentAt)).length;
-        const successCount = newMessages.filter(m => m.status !== 'failed' && isToday(m.sentAt)).length;
-        return {
-          messages: newMessages,
-          logs: newLogs,
-          stats: {
-            ...state.stats,
-            messagesToday: todayCount,
-            successRate: todayCount > 0 ? Math.round((successCount / todayCount) * 100) : 100,
-          },
-        };
-      }
-      case 'message.delivered': {
-        return {
-          messages: state.messages.map(m =>
-            m.messageId === event.message_id
-              ? { ...m, status: 'delivered' as const, deliveredAt: event.at }
-              : m
-          ),
-          logs: newLogs,
-        };
-      }
-      case 'message.read': {
-        return {
-          messages: state.messages.map(m =>
-            m.messageId === event.message_id
-              ? { ...m, status: 'read' as const, readAt: event.at }
-              : m
-          ),
-          logs: newLogs,
-        };
-      }
-      case 'message.failed': {
-        return {
-          messages: state.messages.map(m =>
-            (m.messageId === event.message_id) || (m.phone === event.phone && m.status === 'sent')
-              ? { ...m, status: 'failed' as const, error: event.error }
-              : m
-          ),
-          logs: newLogs,
-        };
-      }
-      case 'session.disconnected': {
+      case 'session.disconnected':
         return {
           connectionStatus: 'disconnected',
           connectedPhone: null,
           logs: newLogs,
         };
-      }
-      case 'session.reconnected': {
+      case 'session.reconnected':
         return {
           connectionStatus: 'connected',
+          logs: newLogs,
+        };
+      case 'message.sent':
+      case 'message.delivered':
+      case 'message.read':
+      case 'otp.verified':
+      case 'message.failed':
+        return { logs: newLogs };
+      case 'generic.message.sent': {
+        const msg: GenericMessage = {
+          id: event.message_id || generateId(),
+          to: event.to || event.phone || '',
+          type: event.msgType || 'text',
+          content: event.content || '',
+          status: 'sent',
+          sentAt: event.at,
+        };
+        return {
+          genericMessages: [msg, ...state.genericMessages].slice(0, 200),
+          logs: newLogs,
+        };
+      }
+      case 'webhook.event': {
+        const evt: WebhookEvent = {
+          id: generateId(),
+          event: event.event_name || 'unknown',
+          url: event.url || '',
+          payload: event.payload || {},
+          status: (event.status as any) || 'success',
+          statusCode: event.status_code || 200,
+          timestamp: event.at,
+        };
+        return {
+          webhookEvents: [evt, ...state.webhookEvents].slice(0, 200),
           logs: newLogs,
         };
       }

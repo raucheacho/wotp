@@ -49,6 +49,7 @@ type Store interface {
 	CreateOTPRequest(ctx context.Context, req *OTPRequest) error
 	GetOTPRequestByToken(ctx context.Context, token string) (*OTPRequest, error)
 	UpdateOTPStatus(ctx context.Context, token string, status OTPStatus) error
+	UpdateOTPStatusByMessageID(ctx context.Context, messageID string, status OTPStatus) error
 	UpdateOTPMessageID(ctx context.Context, token string, messageID string) error
 	IncrementAttempts(ctx context.Context, token string) (int, error)
 	CountRecentOTPs(ctx context.Context, phone string, since time.Time) (int, error)
@@ -61,6 +62,38 @@ type Store interface {
 	ListAPIKeys(ctx context.Context) ([]APIKey, error)
 	DeleteAPIKeysByTier(ctx context.Context, tier string) error
 
+	// Generic Messages
+	SaveGenericMessage(ctx context.Context, msg *GenericMessage) error
+	UpdateGenericMessageStatus(ctx context.Context, id string, status string, errStr string) error
+	GetGenericMessages(ctx context.Context, limit int) ([]GenericMessage, error)
+
+	// Webhooks
+	SaveWebhookLog(ctx context.Context, log *WebhookLog) error
+	GetWebhookLogs(ctx context.Context, limit int) ([]WebhookLog, error)
+
 	// Lifecycle
 	Close() error
 }
+
+// GenericMessage represents a generic WhatsApp message stored in the database.
+type GenericMessage struct {
+	ID          string    `json:"id"`
+	Phone       string    `json:"phone"`
+	MessageType string    `json:"message_type"`
+	Content     string    `json:"content"`
+	Status      string    `json:"status"`
+	Error       string    `json:"error,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// WebhookLog represents a dispatched webhook stored in the database.
+type WebhookLog struct {
+	ID         string    `json:"id"`
+	EventType  string    `json:"event_type"`
+	Payload    string    `json:"payload"`
+	StatusCode int       `json:"status_code"`
+	Error      string    `json:"error,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+

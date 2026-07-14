@@ -68,7 +68,7 @@ func NewServer(
 		wsHub:     wsHub,
 		logger:    logger,
 		startTime: time.Now(),
-		webhooks:  webhooks.NewService(cfg.Webhooks),
+		webhooks:  webhooks.NewService(cfg.Webhooks, otpEngine.Store(), wsHub),
 	}
 }
 
@@ -106,6 +106,9 @@ func (s *Server) Router() *chi.Mux {
 	// Dashboard
 	if s.config.API.EnableDashboard {
 		r.Get("/dashboard/api/messages", s.handleDashboardMessages)
+		r.Get("/dashboard/api/generic-messages", s.handleGetMessages)
+		r.Get("/dashboard/api/webhooks", s.handleDashboardWebhooks)
+		r.Get("/dashboard/api/config", s.handleDashboardConfig)
 
 		distFS, err := fs.Sub(dashboard.DistFS, "dist")
 		if err == nil {
@@ -142,6 +145,7 @@ func (s *Server) Router() *chi.Mux {
 		r.Post("/otp/send", s.handleOTPSend)
 		r.Post("/otp/verify", s.handleOTPVerify)
 		r.Post("/v1/messages/send", s.handleMessagesSend)
+		r.Get("/v1/messages", s.handleGetMessages)
 		r.Get("/v1/chats", s.handleChats)
 	})
 
@@ -220,6 +224,23 @@ func (s *Server) handleDashboardMessages(w http.ResponseWriter, r *http.Request)
 		otps = []store.OTPRequest{}
 	}
 	writeJSON(w, http.StatusOK, otps)
+}
+
+func (s *Server) handleDashboardWebhooks(w http.ResponseWriter, r *http.Request) {
+	logs, err := s.engine.Store().GetWebhookLogs(r.Context(), 100)
+	if err != nil {
+		s.logger.Error("failed to get webhook logs", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load logs"})
+		return
+	}
+	if logs == nil {
+		logs = []store.WebhookLog{}
+	}
+	writeJSON(w, http.StatusOK, logs)
+}
+
+func (s *Server) handleDashboardConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.config)
 }
 
 // OTPSendRequest is the JSON body for POST /otp/send.
@@ -323,6 +344,14 @@ func (s *Server) handleOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Broadcast verification success to dashboard via WebSocket
+	s.wsHub.Broadcast(ws.Event{
+		Type:      "otp.verified",
+		Phone:     result.Phone,
+		MessageID: result.MessageID,
+		At:        time.Now().Format(time.RFC3339),
+	})
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"verified": true,
 		"phone":    result.Phone,
@@ -391,6 +420,26 @@ func (s *Server) StartEventForwarder(ctx context.Context) {
 			}
 			s.webhooks.ProcessEvent(evt)
 			
+			// Update DB status for OTP and Generic Messages
+			if evt.MessageID != "" {
+				var status string
+				switch evt.Type {
+				case "message.sent":
+					status = string(store.StatusSent)
+				case "message.delivered":
+					status = string(store.StatusDelivered)
+				case "message.read":
+					status = string(store.StatusRead)
+				case "message.failed":
+					status = string(store.StatusFailed)
+				}
+				
+				if status != "" {
+					_ = s.engine.Store().UpdateOTPStatusByMessageID(context.Background(), evt.MessageID, store.OTPStatus(status))
+					_ = s.engine.Store().UpdateGenericMessageStatus(context.Background(), evt.MessageID, status, evt.Error)
+				}
+			}
+
 			s.wsHub.Broadcast(ws.Event{
 				Type:      evt.Type,
 				Phone:     evt.Phone,

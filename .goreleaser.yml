@@ -50,7 +50,7 @@ changelog:
 # Homebrew tap publication
 brews:
   - repository:
-      owner: wotp # Replace with actual GitHub owner if different
+      owner: raucheacho
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
@@ -62,7 +62,7 @@ brews:
 # Scoop bucket publication
 scoops:
   - repository:
-      owner: wotp # Replace with actual GitHub owner if different
+      owner: raucheacho
       name: scoop-bucket
       token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
     homepage: "https://github.com/wotp/wotp"

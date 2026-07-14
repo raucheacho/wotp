@@ -1,6 +1,6 @@
 services:
   wotp-core:
-    image: ghcr.io/wotp/core:{{.Version}}
+    image: ghcr.io/raucheacho/wotp:{{.Version}}
     restart: always
     volumes:
       - ./data/session:/data/session

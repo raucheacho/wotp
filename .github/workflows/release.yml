@@ -12,7 +12,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: wotp/core
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   # ─── Docker Image ──────────────────────────────────────────────

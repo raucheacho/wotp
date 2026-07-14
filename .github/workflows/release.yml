@@ -95,6 +95,7 @@ jobs:
       - name: Install and Build
         working-directory: ./sdks/typescript
         run: |
+          npm version ${GITHUB_REF_NAME#v} --no-git-tag-version
           npm ci
           npm run build
 
@@ -121,7 +122,9 @@ jobs:
 
       - name: Build Python package
         working-directory: ./sdks/python
-        run: python -m build
+        run: |
+          sed -i "s/version = \"1.0.0\"/version = \"${GITHUB_REF_NAME#v}\"/" pyproject.toml
+          python -m build
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

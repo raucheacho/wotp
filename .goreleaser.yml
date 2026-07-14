@@ -1,0 +1,69 @@
+version: 2
+
+project_name: wotp-cli
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: cli
+    dir: ./cli
+    main: ./cmd/wotp
+    binary: wotp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+# Homebrew tap publication
+brews:
+  - repository:
+      owner: wotp # Replace with actual GitHub owner if different
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/wotp/wotp"
+    description: "Self-hosted WhatsApp OTP provider CLI"
+    test: |
+      system "#{bin}/wotp --help"
+
+# Scoop bucket publication
+scoops:
+  - repository:
+      owner: wotp # Replace with actual GitHub owner if different
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+    homepage: "https://github.com/wotp/wotp"
+    description: "Self-hosted WhatsApp OTP provider CLI"

@@ -1,0 +1,76 @@
+# ─── OS & IDEs ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ─── Go ────────────────────────────────────────────────────────
+bin/
+obj/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+# Goreleaser & local builds
+dist/
+wotp-cli-*
+
+# ─── Node.js / React (Dashboard & TS SDK) ──────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+# Vite output
+core/dashboard/dist/
+# TS SDK output
+sdks/typescript/dist/
+
+# ─── Python (Python SDK) ───────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+.venv/
+.pytest_cache/
+
+# ─── Environment & Secrets ─────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+
+# ─── Project Specific Data ─────────────────────────────────────
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+# Local CLI test folders
+.wotp/
+data/

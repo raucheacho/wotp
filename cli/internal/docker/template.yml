@@ -1,0 +1,12 @@
+services:
+  wotp-core:
+    image: ghcr.io/wotp/core:{{.Version}}
+    restart: always
+    volumes:
+      - ./data/session:/data/session
+      - ./data/db:/data/db
+      - ../config.toml:/app/config.toml:ro
+      - ../seed/templates.toml:/app/templates.toml:ro
+    env_file: .env
+    ports:
+      - "{{.Port}}:{{.Port}}"

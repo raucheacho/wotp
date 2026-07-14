@@ -19,9 +19,9 @@ obj/
 vendor/
 # Goreleaser & local builds
 dist/
-wotp-cli-*
-wotp-core
-wotp
+/wotp-cli-*
+/wotp-core
+/wotp
 
 # ─── Node.js / React (Dashboard & TS SDK) ──────────────────────
 node_modules/

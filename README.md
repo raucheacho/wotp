@@ -301,6 +301,6 @@ wotp/
 
 <div align="center">
 
-Built by [Rauche](https://github.com/rauche) · Star ⭐ if this saves you from a BSP invoice
+Built by [raucheacho](https://github.com/raucheacho) · Star ⭐ if this saves you from a BSP invoice
 
 </div>

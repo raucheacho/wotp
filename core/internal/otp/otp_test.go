@@ -112,6 +112,14 @@ func (m *memStore) GetRecentOTPs(_ context.Context, limit int) ([]store.OTPReque
 	return out, nil
 }
 
+func (m *memStore) SaveGenericMessage(_ context.Context, msg *store.GenericMessage) error { return nil }
+func (m *memStore) UpdateGenericMessageStatus(_ context.Context, messageID string, status string, errorMsg string) error { return nil }
+func (m *memStore) GetGenericMessages(_ context.Context, limit int) ([]store.GenericMessage, error) { return nil, nil }
+func (m *memStore) GetGenericMessageByID(_ context.Context, messageID string) (*store.GenericMessage, error) { return nil, nil }
+func (m *memStore) SaveWebhookLog(_ context.Context, log *store.WebhookLog) error { return nil }
+func (m *memStore) GetWebhookLogs(_ context.Context, limit int) ([]store.WebhookLog, error) { return nil, nil }
+func (m *memStore) UpdateOTPStatusByMessageID(_ context.Context, messageID string, status store.OTPStatus) error { return nil }
+
 func (m *memStore) Close() error { return nil }
 
 // --- Tests ---

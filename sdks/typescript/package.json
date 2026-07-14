@@ -1,12 +1,12 @@
 {
-  "name": "@wotp/client",
+  "name": "wotp-client",
   "version": "1.0.0",
   "description": "Official TypeScript SDK for Wotp — WhatsApp OTP, self-hosted, one command.",
   "author": "Wotp",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wotp/wotp"
+    "url": "https://github.com/raucheacho/wotp"
   },
   "keywords": [
     "wotp",

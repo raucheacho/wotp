@@ -1,20 +1,20 @@
-# @wotp/client
+# wotp-client
 
 Official TypeScript SDK for **Wotp** — WhatsApp OTP, self-hosted, one command.
 
-[![npm](https://img.shields.io/npm/v/@wotp/client)](https://www.npmjs.com/package/@wotp/client)
+[![npm](https://img.shields.io/npm/v/wotp-client)](https://www.npmjs.com/package/wotp-client)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Installation
 
 ```bash
-npm install @wotp/client
+npm install wotp-client
 ```
 
 ## Quick Start
 
 ```ts
-import { createClient } from '@wotp/client'
+import { createClient } from 'wotp-client'
 
 const wotp = createClient('http://localhost:54321', 'wotp_anon_xxx')
 

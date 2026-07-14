@@ -152,11 +152,11 @@ Check instance health and WhatsApp connection status.
 ### TypeScript
 
 ```bash
-npm install @wotp/client
+npm install wotp-client
 ```
 
 ```ts
-import { createClient, RateLimitError, InvalidCodeError } from '@wotp/client'
+import { createClient, RateLimitError, InvalidCodeError } from 'wotp-client'
 
 const wotp = createClient('http://localhost:54321', 'wotp_anon_xxx')
 
@@ -266,7 +266,7 @@ wotp/
 ├── core/                     # Go API server + dashboard
 │   └── Dockerfile
 ├── sdks/
-│   ├── typescript/           # @wotp/client (npm)
+│   ├── typescript/           # wotp-client (npm)
 │   ├── go/                   # wotp-go (Go module)
 │   └── python/               # wotp (PyPI)
 ├── .github/workflows/        # CI/CD

@@ -44,7 +44,7 @@ wotp start
 │                wotp-core (single Go binary)                 │
 │                                                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐ │
-│  │  whatsmeow   │  │  OTP engine  │  │  REST API (Gin)   │ │
+│  │  whatsmeow   │  │  OTP engine  │  │  REST API (Chi)   │ │
 │  │  WA client   │  │  gen / verify│  │  + WebSocket hub  │ │
 │  └──────────────┘  └──────────────┘  └───────────────────┘ │
 │  ┌──────────────┐  ┌──────────────────────────────────────┐ │

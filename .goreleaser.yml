@@ -2,8 +2,6 @@ version: 2
 
 project_name: wotp-cli
 
-
-
 builds:
   - id: cli
     dir: ./cli
@@ -20,23 +18,17 @@ builds:
       - arm64
 
 archives:
-  - formats: ["tar.gz"]
+  - formats:
+      - tar.gz
     name_template: >-
-      {{ .ProjectName }}_
-      {{- title .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
-      {{- else if eq .Arch "386" }}i386
-      {{- else }}{{ .Arch }}{{ end }}
-      {{- if .Arm }}v{{ .Arm }}{{ end }}
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     format_overrides:
       - goos: windows
-        formats: ["zip"]
+        formats:
+          - zip
 
 checksum:
   name_template: 'checksums.txt'
-
-snapshot:
-  version_template: "{{ incpatch .Version }}-next"
 
 changelog:
   sort: asc
@@ -44,24 +36,35 @@ changelog:
     exclude:
       - '^docs:'
       - '^test:'
+      - '^chore:'
 
-# Homebrew tap publication
 brews:
   - repository:
       owner: raucheacho
       name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
-    homepage: "https://github.com/wotp/wotp"
+    homepage: "https://github.com/raucheacho/wotp"
     description: "Self-hosted WhatsApp OTP provider CLI"
+    license: "MIT"
+    install: |
+      bin.install "wotp"
     test: |
-      system "#{bin}/wotp --help"
+      system "#{bin}/wotp", "--help"
+    download_strategy: CurlDownloadStrategy
 
-# Scoop bucket publication
 scoops:
   - repository:
       owner: raucheacho
       name: scoop-bucket
-      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
-    homepage: "https://github.com/wotp/wotp"
+      token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
+    homepage: "https://github.com/raucheacho/wotp"
     description: "Self-hosted WhatsApp OTP provider CLI"
+    license: "MIT"
+
+release:
+  github:
+    owner: raucheacho
+    name: wotp
+  draft: false
+  prerelease: auto

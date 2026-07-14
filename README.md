@@ -27,7 +27,7 @@ Your own WhatsApp infrastructure — OTPs, Transactional Alerts, and Webhooks. I
 
 ---
 
-## ⚡ Quickstart
+## Quickstart
 
 ```bash
 npm install -g wotp-cli
@@ -37,7 +37,7 @@ wotp start
 # Scan the QR code with WhatsApp → Done.
 ```
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -48,7 +48,7 @@ wotp start
 │  │  WA client   │  │  gen / verify│  │  + WebSocket hub  │ │
 │  └──────────────┘  └──────────────┘  └───────────────────┘ │
 │  ┌──────────────┐  ┌──────────────────────────────────────┐ │
-│  │  SQLite / PG │  │  Dashboard (static, embed.FS)        │ │
+│  │  SQLite      │  │  Dashboard (static, embed.FS)        │ │
 │  │  storage     │  │  served on /dashboard                │ │
 │  └──────────────┘  └──────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
@@ -60,16 +60,16 @@ wotp start
 
 One binary. One image. One port. One process.
 
-## 📡 API Reference
+## API Reference
 
 All endpoints require an `apikey` header with your anon or service key.
 
-### `POST /otp/send`
+### `POST /v1/otp/send`
 
 Send an OTP to a phone number. The code is generated internally — the client only receives an opaque token.
 
 ```bash
-curl -X POST http://localhost:54321/otp/send \
+curl -X POST http://localhost:54321/v1/otp/send \
   -H "Content-Type: application/json" \
   -H "apikey: wotp_anon_xxx" \
   -d '{"phone": "+212600000000"}'
@@ -82,12 +82,12 @@ curl -X POST http://localhost:54321/otp/send \
 }
 ```
 
-### `POST /otp/verify`
+### `POST /v1/otp/verify`
 
 Verify an OTP code against a token.
 
 ```bash
-curl -X POST http://localhost:54321/otp/verify \
+curl -X POST http://localhost:54321/v1/otp/verify \
   -H "Content-Type: application/json" \
   -H "apikey: wotp_anon_xxx" \
   -d '{"token": "otp_tok_9f8e7d6c", "code": "483920"}'
@@ -120,14 +120,14 @@ curl -X POST http://localhost:54321/v1/messages/send \
 }
 ```
 
-### Webhooks & Inbound Messages 🔄
+### Webhooks & Inbound Messages
 
 Wotp supports **two-way communication**. You can configure a Webhook endpoint in your `config.toml` to instantly receive HTTP POST payloads when:
 - `message.received`: A user replies to your WhatsApp number (Perfect for connecting AI Support Agents like n8n/Make).
 - `message.sent`, `message.delivered`, `message.read`: Status updates for your OTPs and outbound messages.
 - `session.disconnected`: If your phone loses connection.
 
-### `GET /health`
+### `GET /v1/health`
 
 Check instance health and WhatsApp connection status.
 
@@ -147,7 +147,7 @@ Check instance health and WhatsApp connection status.
 | `400` / `410` | `expired_token` | Token has expired |
 | `429` | — | Rate limit exceeded |
 
-## 📦 SDK Examples
+## SDK Examples
 
 ### TypeScript
 
@@ -216,7 +216,7 @@ except InvalidCodeError as e:
     print(f"Wrong code. {e.attempts_remaining} attempts left")
 ```
 
-## ⚙️ Configuration
+## Configuration
 
 All configuration lives in `wotp/config.toml`:
 
@@ -259,7 +259,7 @@ otp_message = "Votre code de vérification : {{code}}. Valable {{expiry}} minute
 otp_message = "Click here to securely login: https://your-app.com/verify?code={{code}}"
 ```
 
-## 🗂️ Project Structure
+## Project Structure
 
 ```
 wotp/
@@ -274,7 +274,7 @@ wotp/
 └── README.md
 ```
 
-## 🔒 Security
+## Security
 
 - **Two-tier API keys**: `anon` (send/verify only, rate-limited) and `service` (admin ops)
 - **Rate limiting** per IP and per phone number, enforced at the API level
@@ -282,7 +282,7 @@ wotp/
 - **Dashboard local-only by default** — explicit config required to expose publicly
 - **`.env` is gitignored** with warnings never to commit it
 
-## 🗺️ Roadmap
+## Roadmap
 
 | Version | What's coming |
 |---------|---------------|
@@ -293,7 +293,7 @@ wotp/
 | **v2.0** | Multi-number per instance (failover/round-robin) |
 | **v2.x** | Optional SMS fallback |
 
-## 📄 License
+## License
 
 [MIT](LICENSE) — Use it, fork it, ship it.
 

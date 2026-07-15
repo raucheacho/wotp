@@ -26,17 +26,25 @@ export default function QRScreen() {
 
     const checkQr = async () => {
       try {
-        const res = await fetch('/v1/qr');
+        const res = await fetch('/v1/qr', {
+          headers: {
+            'Accept': 'application/json'
+          }
+        });
         if (!mounted) return;
         
         if (res.status === 200) {
           const data = await res.json();
-          if (data.status === 'connected') {
+          if (data.status === 'connected' || data.status === 'already_connected') {
             setConnectionStatus('connected');
             return;
           }
           if (data.qr) {
-            setQrCode(data.qr);
+            // data.qr is a raw string. We use it to create a unique URL 
+            // so the browser fetches the PNG version from the same endpoint.
+            // btoa encodes it safely so the image only reloads when the QR changes.
+            const safeHash = btoa(data.qr).replace(/=/g, '').substring(0, 20);
+            setQrCode(`/v1/qr?hash=${safeHash}`);
             setError(null);
           }
         } else {

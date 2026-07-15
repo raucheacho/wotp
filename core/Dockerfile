@@ -62,6 +62,6 @@ EXPOSE 54321
 VOLUME ["/data/session", "/data/db"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -qO- http://localhost:54321/health || exit 1
+    CMD wget -qO- http://localhost:54321/v1/health || exit 1
 
 ENTRYPOINT ["/app/wotp-core", "-data=/data"]

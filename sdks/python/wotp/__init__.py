@@ -30,7 +30,12 @@ __all__ = [
     "HealthResponse",
 ]
 
-__version__ = "1.0.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("wotp")
+except PackageNotFoundError:
+    __version__ = "dev"
 
 
 def create_client(

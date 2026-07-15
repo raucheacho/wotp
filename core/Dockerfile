@@ -1,6 +1,8 @@
 # ─── Stage 1: Build Dashboard ──────────────────────────────────────
 FROM oven/bun:alpine AS dashboard-builder
 
+ARG VERSION=dev
+
 WORKDIR /app/dashboard
 
 # Install dependencies first (cache layer)
@@ -9,6 +11,8 @@ RUN bun install
 
 # Build static assets
 COPY dashboard/ ./
+ENV VITE_APP_VERSION=${VERSION}
+
 RUN bun run build
 
 # ─── Stage 2: Build Go Binary ─────────────────────────────────────

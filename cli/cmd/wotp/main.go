@@ -8,21 +8,22 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/wotp/cli/internal/commands"
+	"github.com/wotp/cli/internal/config"
 )
 
-var version = "1.0.0"
+var version = "dev"
 
 func main() {
+	config.AppVersion = version
 	rootCmd := &cobra.Command{
 		Use:   "wotp",
 		Short: "Wotp CLI — WhatsApp OTP, self-hosted, one command",
 		Long: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#25D366")).Render("wotp") +
 			" — Manage your self-hosted WhatsApp OTP instance.\n\n" +
 			"Get started:\n" +
-			"  wotp init my-project\n" +
-			"  cd my-project\n" +
+			"  wotp init in your project\n" +
 			"  wotp start",
-		Version:       version,
+		Version:       config.AppVersion,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

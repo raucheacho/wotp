@@ -95,7 +95,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	ui.Blank()
 	ui.PrintKeys(anonKey, serviceKey)
 	ui.Blank()
-	ui.Info(fmt.Sprintf("Next steps:"))
+	ui.Info("Next steps:")
 	if len(args) > 0 {
 		ui.Dim(fmt.Sprintf("  cd %s", projectName))
 	}

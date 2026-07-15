@@ -9,6 +9,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+var version = "dev"
+
 // Config is the root configuration loaded from config.toml.
 type Config struct {
 	Project   ProjectConfig   `toml:"project"`

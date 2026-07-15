@@ -47,10 +47,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// Pull images if missing
+	imageName := fmt.Sprintf("ghcr.io/raucheacho/wotp:%s", config.AppVersion)
 	if docker.HasCoreImageLocally() {
-		ui.Success("Local image ghcr.io/wotp/core:1.0.0 found, skipping pull")
+		ui.Success(fmt.Sprintf("Local image %s found, skipping pull", imageName))
 	} else {
-		stop := ui.Spinner(fmt.Sprintf("Pulling ghcr.io/wotp/core:1.0.0..."))
+		stop := ui.Spinner(fmt.Sprintf("Pulling %s...", imageName))
 		err = docker.Pull(projectDir)
 		stop()
 		if err != nil {

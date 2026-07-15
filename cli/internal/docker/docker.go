@@ -16,7 +16,6 @@ import (
 //go:embed template.yml
 var templateFS embed.FS
 
-const defaultVersion = "1.0.0"
 
 // TemplateData holds the values injected into the docker-compose template.
 type TemplateData struct {
@@ -38,7 +37,7 @@ func RenderCompose(cfg config.Config, projectDir string) error {
 	}
 
 	data := TemplateData{
-		Version: defaultVersion,
+		Version: config.AppVersion,
 		Port:    cfg.API.Port,
 	}
 
@@ -143,7 +142,7 @@ func IsRunning(projectDir string) bool {
 
 // HasCoreImageLocally checks if the core image is already available locally.
 func HasCoreImageLocally() bool {
-	imageName := fmt.Sprintf("ghcr.io/wotp/core:%s", defaultVersion)
+	imageName := fmt.Sprintf("ghcr.io/raucheacho/wotp:%s", config.AppVersion)
 	cmd := exec.Command("docker", "image", "inspect", imageName)
 	return cmd.Run() == nil
 }

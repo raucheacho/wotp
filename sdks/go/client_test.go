@@ -174,8 +174,7 @@ func TestHealth_Success(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"status":         "connected",
-			"phone":          "+212600000000",
+			"status":         "ok",
 			"uptime_seconds": 12345,
 		})
 	}))
@@ -187,11 +186,8 @@ func TestHealth_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if resp.Status != "connected" {
-		t.Errorf("expected status 'connected', got '%s'", resp.Status)
-	}
-	if resp.Phone != "+212600000000" {
-		t.Errorf("expected phone '+212600000000', got '%s'", resp.Phone)
+	if resp.Status != "ok" {
+		t.Errorf("expected status 'ok', got '%s'", resp.Status)
 	}
 	if resp.UptimeSeconds != 12345 {
 		t.Errorf("expected uptime 12345, got %d", resp.UptimeSeconds)
@@ -208,8 +204,7 @@ func TestRetryOnTransientError(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"status":         "connected",
-			"phone":          "+212600000000",
+			"status":         "ok",
 			"uptime_seconds": 100,
 		})
 	}))
@@ -228,8 +223,8 @@ func TestRetryOnTransientError(t *testing.T) {
 	if attempts != 3 {
 		t.Errorf("expected 3 attempts, got %d", attempts)
 	}
-	if resp.Status != "connected" {
-		t.Errorf("expected status 'connected', got '%s'", resp.Status)
+	if resp.Status != "ok" {
+		t.Errorf("expected status 'ok', got '%s'", resp.Status)
 	}
 }
 
@@ -296,8 +291,7 @@ func TestSendText_Success(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"success":   true,
-			"messageId": "msg_123",
+			"message_id": "msg_123",
 		})
 	}))
 	defer ts.Close()
@@ -308,10 +302,67 @@ func TestSendText_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !resp.Success {
-		t.Error("expected success to be true")
-	}
 	if resp.MessageID != "msg_123" {
 		t.Errorf("expected msg_123, got '%s'", resp.MessageID)
+	}
+}
+
+func TestSendText_Failure(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to send message"})
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, WithApiKey("test-key"))
+	_, err := client.SendText(context.Background(), "+212600000000", "hello")
+	if err == nil {
+		t.Fatal("expected an error when the send fails server-side")
+	}
+}
+
+func TestGetChats_Success(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chats" {
+			t.Errorf("expected /v1/chats, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]map[string]string{
+			{"jid": "212600000000@s.whatsapp.net", "name": "Alice"},
+		})
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, WithApiKey("test-key"))
+	chats, err := client.GetChats(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chats) != 1 || chats[0].JID != "212600000000@s.whatsapp.net" || chats[0].Name != "Alice" {
+		t.Fatalf("unexpected chats: %+v", chats)
+	}
+}
+
+func TestSetPresence_Success(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages/presence" {
+			t.Errorf("expected /v1/messages/presence, got %s", r.URL.Path)
+		}
+		var body SetPresenceRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if body.State != PresenceTyping {
+			t.Errorf("expected state %q, got %q", PresenceTyping, body.State)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, WithApiKey("test-key"))
+	if err := client.SetPresence(context.Background(), "+212600000000", PresenceTyping); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

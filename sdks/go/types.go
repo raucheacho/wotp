@@ -24,6 +24,10 @@ type SendOTPResponse struct {
 	Token string `json:"token"`
 	// ExpiresAt is the timestamp when this OTP expires.
 	ExpiresAt time.Time `json:"expires_at"`
+	// Warning is set to "message_send_failed" when the OTP was created but
+	// the WhatsApp send itself failed (e.g. no number is connected yet).
+	// The token is still valid — only delivery failed.
+	Warning string `json:"warning,omitempty"`
 }
 
 // VerifyOTPResponse is the result of an OTP verification attempt.
@@ -36,12 +40,13 @@ type VerifyOTPResponse struct {
 	AttemptsRemaining *int `json:"attempts_remaining,omitempty"`
 }
 
-// HealthResponse is the result of a health check.
+// HealthResponse is the result of a health check. This is an instance-wide
+// liveness check — it has no notion of a single connected phone number,
+// since one instance can host many projects each with their own numbers.
+// See GetChats or the dashboard for per-project connection state.
 type HealthResponse struct {
-	// Status is the WhatsApp connection status (e.g. "connected").
+	// Status is "ok" when the instance is up.
 	Status string `json:"status"`
-	// Phone is the connected phone number.
-	Phone string `json:"phone"`
 	// UptimeSeconds is the uptime of the Wotp instance in seconds.
 	UptimeSeconds int64 `json:"uptime_seconds"`
 }
@@ -72,14 +77,27 @@ type SendMediaRequest struct {
 	Caption string `json:"caption,omitempty"`
 }
 
+// MessageResponse is the result of a successful POST /v1/messages/send.
+// There is no "success" field — a failed send comes back as a non-2xx
+// status and doRequest returns it as an error instead.
 type MessageResponse struct {
-	Success   bool   `json:"success"`
-	MessageID string `json:"messageId,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
 }
 
+// Chat is a WhatsApp contact visible to one of the project's connected numbers.
 type Chat struct {
-	ID          string `json:"id"`
-	Name        string `json:"name,omitempty"`
-	UnreadCount int    `json:"unreadCount,omitempty"`
-	Timestamp   int64  `json:"timestamp,omitempty"`
+	JID  string `json:"jid"`
+	Name string `json:"name,omitempty"`
+}
+
+// Presence states accepted by SetPresence.
+const (
+	PresenceTyping = "typing"
+	PresencePaused = "paused"
+)
+
+// SetPresenceRequest is the payload for POST /v1/messages/presence.
+type SetPresenceRequest struct {
+	Phone string `json:"phone"`
+	State string `json:"state"`
 }

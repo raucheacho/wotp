@@ -51,15 +51,17 @@ WORKDIR /app
 # Copy the compiled binary
 COPY --from=go-builder /wotp-core /app/wotp-core
 
-# Create data directories
-RUN mkdir -p /data/session /data/db \
+# Data directory: control.db (instance-wide) + projects/<id>/{data.db,session.db}
+# (per project) — see core/internal/project/registry.go. A single mount point,
+# since wotp-core now manages its own subdirectory layout underneath /data.
+RUN mkdir -p /data \
     && chown -R wotp:wotp /data /app
 
 USER wotp
 
 EXPOSE 54321
 
-VOLUME ["/data/session", "/data/db"]
+VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -qO- http://localhost:54321/v1/health || exit 1

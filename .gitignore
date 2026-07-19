@@ -66,6 +66,11 @@ venv/
 !.env.example
 *.pem
 
+# ─── Local scratch ──────────────────────────────────────────────
+# Personal integration-testing sandbox — never meant to be committed,
+# here or anywhere else (it holds real API keys and WhatsApp session data).
+demos/
+
 # ─── Project Specific Data ─────────────────────────────────────
 # SQLite databases
 *.db

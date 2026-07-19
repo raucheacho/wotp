@@ -22,10 +22,11 @@ func NewStatusCmd() *cobra.Command {
 	}
 }
 
-// healthResponse matches the GET /health response from wotp-core (spec §7).
+// healthResponse matches wotp-core's GET /v1/health response, which is
+// instance-wide (no longer carries a single number's phone/status — see
+// `wotp project keys <slug>` for per-number connection state).
 type healthResponse struct {
 	Status        string `json:"status"`
-	Phone         string `json:"phone"`
 	UptimeSeconds int64  `json:"uptime_seconds"`
 }
 
@@ -43,7 +44,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	// Check if containers are running
 	if !docker.IsRunning(projectDir) {
 		ui.Blank()
-		ui.PrintStatus("stopped", "", 0)
+		ui.PrintStatus("stopped", 0)
 		ui.Dim("  Run 'wotp start' to start the instance.")
 		ui.Blank()
 		return nil
@@ -56,7 +57,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	resp, err := client.Get(healthURL)
 	if err != nil {
 		ui.Blank()
-		ui.PrintStatus("unreachable", "", 0)
+		ui.PrintStatus("unreachable", 0)
 		ui.Dim("  Container is running but API is not responding.")
 		ui.Dimf("  Error: %v", err)
 		ui.Blank()
@@ -67,13 +68,13 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	var health healthResponse
 	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
 		ui.Blank()
-		ui.PrintStatus("unknown", "", 0)
+		ui.PrintStatus("unknown", 0)
 		ui.Dim("  Could not parse health response.")
 		ui.Blank()
 		return nil
 	}
 
-	ui.PrintStatus(health.Status, health.Phone, health.UptimeSeconds)
+	ui.PrintStatus(health.Status, health.UptimeSeconds)
 
 	return nil
 }

@@ -84,16 +84,23 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	ui.Success("Generated seed/templates.toml")
 
-	// Generate API keys and write .env
+	// Generate API keys and write .env. The root key authorizes wotp-core's
+	// instance-admin endpoints (`wotp project ...`) — wotp-core imports it
+	// from WOTP_ROOT_KEY on first boot, same mechanism as anon/service.
 	anonKey, serviceKey, err := keys.GenerateKeyPair()
 	if err != nil {
 		return err
 	}
-	if err := keys.WriteEnvFile(config.EnvPath(projectDir), anonKey, serviceKey); err != nil {
+	rootKey, err := keys.GenerateKey(keys.RootPrefix)
+	if err != nil {
+		return err
+	}
+	if err := keys.WriteEnvFile(config.EnvPath(projectDir), anonKey, serviceKey, rootKey); err != nil {
 		return err
 	}
 	ui.Blank()
 	ui.PrintKeys(anonKey, serviceKey)
+	ui.KeyValue("Root key", rootKey)
 	ui.Blank()
 	ui.Info("Next steps:")
 	if len(args) > 0 {

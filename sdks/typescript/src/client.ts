@@ -1,5 +1,5 @@
 /**
- * @wotp/client — HTTP client with auto-retry on transient errors.
+ * wotp-client — HTTP client with auto-retry on transient errors.
  */
 
 import type {
@@ -11,6 +11,7 @@ import type {
   MessageResponse,
   Chat,
   HealthResponse,
+  PresenceState,
   APIErrorResponse,
 } from './types';
 import {
@@ -62,14 +63,15 @@ export class WotpClient {
    * @throws {RateLimitError} If the phone/IP has exceeded the rate limit.
    */
   async sendOTP(phone: string): Promise<SendOTPResponse> {
-    const data = await this.request<{ token: string; expires_at: string }>(
-      'POST',
-      '/v1/otp/send',
-      { phone },
-    );
+    const data = await this.request<{
+      token: string;
+      expires_at: string;
+      warning?: string;
+    }>('POST', '/v1/otp/send', { phone });
     return {
       token: data.token,
       expiresAt: data.expires_at,
+      warning: data.warning,
     };
   }
 
@@ -97,55 +99,61 @@ export class WotpClient {
   }
 
   /**
-   * Check the health of the Wotp instance.
+   * Check the liveness of the Wotp instance. This is instance-wide — it has
+   * no notion of a single connected phone number, since one instance can
+   * host many projects each with their own numbers.
    *
-   * @returns Connection status, phone number, and uptime.
+   * @returns Status and uptime.
    */
   async health(): Promise<HealthResponse> {
     const data = await this.request<{
       status: string;
-      phone: string;
       uptime_seconds: number;
-    }>('GET', '/health');
+    }>('GET', '/v1/health');
 
     return {
       status: data.status,
-      phone: data.phone,
       uptimeSeconds: data.uptime_seconds,
     };
   }
 
-  
   /**
    * Send a text message to the given phone number.
    */
   async sendText(phone: string, text: string): Promise<MessageResponse> {
-    const data = await this.request<MessageResponse>('POST', '/v1/messages/send', {
+    const data = await this.request<{ message_id?: string }>('POST', '/v1/messages/send', {
       phone,
       type: 'text',
       text,
     });
-    return data;
+    return { messageId: data.message_id };
   }
 
   /**
    * Send a media message to the given phone number.
    */
   async sendMedia(phone: string, media: { url?: string; base64?: string; caption?: string }): Promise<MessageResponse> {
-    const data = await this.request<MessageResponse>('POST', '/v1/messages/send', {
+    const data = await this.request<{ message_id?: string }>('POST', '/v1/messages/send', {
       phone,
       type: 'media',
       ...media,
     });
-    return data;
+    return { messageId: data.message_id };
   }
 
   /**
-   * List all chats.
+   * List the WhatsApp contacts visible to the project's connected numbers.
    */
   async getChats(): Promise<Chat[]> {
     const data = await this.request<Chat[]>('GET', '/v1/chats');
     return data;
+  }
+
+  /**
+   * Set the typing indicator for a chat without sending a message.
+   */
+  async setPresence(phone: string, state: PresenceState): Promise<void> {
+    await this.request<{ ok: boolean }>('POST', '/v1/messages/presence', { phone, state });
   }
 
   // ─── Internal ────────────────────────────────────────────────

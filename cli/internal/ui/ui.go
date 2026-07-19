@@ -194,17 +194,14 @@ func PrintStartBanner(port int, anonKey, serviceKey string) {
 	fmt.Fprintln(os.Stderr, Brand("Wotp is running.")+" Run "+keyStyle.Render("wotp status")+" anytime to check health.")
 }
 
-// PrintQRInstructions prints the QR code scanning instructions.
+// PrintQRInstructions prints the QR code scanning instructions. The QR
+// itself is rendered by the dashboard (project-scoped, see
+// core/internal/api/projects.go), not by the CLI.
 func PrintQRInstructions(port int) {
 	Blank()
 	Title("Scan this QR code with WhatsApp (Settings → Linked Devices):")
 	Blank()
-	// Note: Actual QR code rendering would come from the wotp-core /qr endpoint.
-	// In the CLI we display the instruction and point to the web URL.
-	dimStyle := lipgloss.NewStyle().Foreground(gray)
-	fmt.Fprintln(os.Stderr, dimStyle.Render("  (QR code will be displayed by the wotp-core container)"))
-	Blank()
-	Infof("Or open: http://localhost:%d/qr", port)
+	Infof("Open http://localhost:%d/dashboard to see the QR code.", port)
 }
 
 // ConfirmPrompt asks the user for a yes/no confirmation. Returns true if user confirms.
@@ -230,24 +227,23 @@ func DoubleConfirmPrompt(msg, confirmWord string) bool {
 	return strings.TrimSpace(response) == confirmWord
 }
 
-// PrintStatus displays a formatted status output.
-func PrintStatus(status, phone string, uptimeSeconds int64) {
+// PrintStatus displays a formatted status output. Per-number connection
+// state lives per-project now (`wotp project keys <slug>`) — this only
+// reports whether the instance's API process itself is up.
+func PrintStatus(status string, uptimeSeconds int64) {
 	Blank()
 	Title("Wotp Status")
 	Blank()
 
 	statusColor := green
 	statusIcon := "●"
-	if status != "connected" {
+	if status != "ok" {
 		statusColor = red
 		statusIcon = "○"
 	}
 	statusStyle := lipgloss.NewStyle().Foreground(statusColor).Bold(true)
 
 	fmt.Fprintf(os.Stderr, "  Status:  %s %s\n", statusStyle.Render(statusIcon), statusStyle.Render(status))
-	if phone != "" {
-		fmt.Fprintf(os.Stderr, "  Phone:   %s\n", valueStyle.Render(phone))
-	}
 	if uptimeSeconds > 0 {
 		duration := time.Duration(uptimeSeconds) * time.Second
 		fmt.Fprintf(os.Stderr, "  Uptime:  %s\n", valueStyle.Render(formatDuration(duration)))

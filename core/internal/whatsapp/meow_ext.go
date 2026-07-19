@@ -47,15 +47,7 @@ func (m *MeowClient) SendMedia(ctx context.Context, phone, url, base64Data, capt
 	}
 
 	contentType := http.DetectContentType(data)
-
-	// Strip non-digit characters for WhatsApp JID
-	var cleanPhone string
-	for _, r := range phone {
-		if r >= '0' && r <= '9' {
-			cleanPhone += string(r)
-		}
-	}
-	jid := types.NewJID(cleanPhone, types.DefaultUserServer)
+	jid := toJID(phone)
 
 	if m.simulateTyping {
 		_ = m.client.SendChatPresence(ctx, jid, types.ChatPresenceComposing, types.ChatPresenceMediaText)

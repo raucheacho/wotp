@@ -131,9 +131,18 @@ class WotpClient:
         return MessageResponse.model_validate(data)
 
     def get_chats(self) -> list[Chat]:
-        """List all chats."""
+        """List the WhatsApp contacts visible to the project's connected numbers."""
         data = self._request("GET", "/v1/chats")
         return [Chat.model_validate(c) for c in data]
+
+    def set_presence(self, phone: str, state: str) -> None:
+        """Set the typing indicator for a chat without sending a message.
+
+        Args:
+            phone: E.164 formatted phone number.
+            state: ``"typing"`` or ``"paused"``.
+        """
+        self._request("POST", "/v1/messages/presence", json={"phone": phone, "state": state})
 
     # ─── Internal ────────────────────────────────────────────────
 

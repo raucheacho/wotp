@@ -16,18 +16,19 @@ export default function WebhooksScreen() {
       </div>
 
       <Card className="p-6">
-        <h3 className="text-lg font-semibold mb-4">Configuration via config.toml</h3>
+        <h3 className="text-lg font-semibold mb-4">Configuration</h3>
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 bg-muted/50 rounded-lg border">
           <div className="mb-4 sm:mb-0">
             <div className="text-sm text-muted-foreground">
-              Pour des raisons de sécurité, les Webhooks ne peuvent pas être ajoutés depuis l'interface web.
-              Veuillez éditer la section <code className="text-primary font-mono bg-primary/10 px-1 rounded">[webhooks]</code> de votre fichier <code className="text-primary font-mono bg-primary/10 px-1 rounded">config.toml</code> :
+              Les webhooks sont configurés par projet, pas dans <code className="text-primary font-mono bg-primary/10 px-1 rounded">config.toml</code> (settings instance-wide uniquement).
+              Pas encore d'écran dédié ici — utilisez l'API en attendant :
             </div>
             <pre className="mt-3 p-3 bg-background rounded border font-mono text-xs text-muted-foreground overflow-x-auto">
-{`[webhooks]
-endpoint = "https://votre-domaine.com/webhook"
-secret = "votre_cle_secrete"
-events = ["message.received", "message.delivered"]`}
+{`curl -X PATCH http://localhost:54321/v1/projects/<id>/settings \\
+  -H "apikey: <root key>" \\
+  -d '{"webhooks": {"endpoint": "https://votre-domaine.com/webhook",
+                    "secret": "votre_cle_secrete",
+                    "events": ["message.received", "message.delivered"]}}'`}
             </pre>
           </div>
         </div>
@@ -63,7 +64,9 @@ events = ["message.received", "message.delivered"]`}
                   </div>
                   <div className="flex flex-col min-w-0 flex-1">
                     <span className="font-semibold text-sm capitalize">{evt.event.replace(/_/g, ' ')}</span>
-                    <span className="text-xs text-muted-foreground font-mono truncate max-w-md">{evt.url}</span>
+                    {evt.url && (
+                      <span className="text-xs text-muted-foreground font-mono truncate max-w-md">{evt.url}</span>
+                    )}
                   </div>
                 </div>
 

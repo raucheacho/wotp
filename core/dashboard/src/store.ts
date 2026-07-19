@@ -1,9 +1,15 @@
 import { create } from 'zustand';
-import type { ConnectionStatus, DashboardStats, LogEntry, OtpMessage, GenericMessage, WebhookEvent, Theme, WsEvent } from './types';
+import type { ConnectionStatus, DashboardStats, LogEntry, OtpMessage, GenericMessage, WebhookEvent, Theme, WsEvent, Project } from './types';
+
+const PROJECT_STORAGE_KEY = 'wotp-project-id';
 
 export interface AppState {
   connectionStatus: ConnectionStatus;
   connectedPhone: string | null;
+  /** Whether this project's Cloud API backend is enabled — purely for the
+   * sidebar's "Operational (Cloud API)" label, so it doesn't just say
+   * "Operational" and imply a whatsmeow number when there isn't one. */
+  cloudEnabled: boolean;
   messages: OtpMessage[];
   genericMessages: GenericMessage[];
   webhookEvents: WebhookEvent[];
@@ -11,16 +17,21 @@ export interface AppState {
   stats: DashboardStats;
   theme: Theme;
   wsStatus: 'connecting' | 'connected' | 'disconnected';
-  
+  projects: Project[];
+  selectedProjectId: string | null;
+
   // Actions
   setConnectionStatus: (status: ConnectionStatus, phone?: string) => void;
+  setCloudEnabled: (enabled: boolean) => void;
   setWsStatus: (status: 'connecting' | 'connected' | 'disconnected') => void;
   setTheme: (theme: Theme) => void;
   setMessages: (messages: any[]) => void;
   setGenericMessages: (messages: GenericMessage[]) => void;
-  setWebhookEvents: (events: WebhookEvent[]) => void;
+  setWebhookEvents: (events: any[]) => void;
   addWsEvent: (event: WsEvent) => void;
   clearLogs: () => void;
+  setProjects: (projects: Project[]) => void;
+  selectProject: (id: string) => void;
 }
 
 function generateId(): string {
@@ -72,6 +83,7 @@ const mockWebhookEvents: WebhookEvent[] = [];
 export const useStore = create<AppState>((set) => ({
   connectionStatus: 'connecting',
   connectedPhone: null,
+  cloudEnabled: false,
   messages: [],
   genericMessages: mockGenericMessages,
   webhookEvents: mockWebhookEvents,
@@ -79,6 +91,8 @@ export const useStore = create<AppState>((set) => ({
   stats: { messagesToday: 0, successRate: 100, avgResponseMs: 0, activeWebhooks: 0, genericMessagesToday: 0 },
   theme: (localStorage.getItem('wotp-theme') as Theme) || 'dark',
   wsStatus: 'disconnected',
+  projects: [],
+  selectedProjectId: localStorage.getItem(PROJECT_STORAGE_KEY),
 
   setConnectionStatus: (status, phone) => set((state) => ({
     connectionStatus: status,
@@ -86,6 +100,8 @@ export const useStore = create<AppState>((set) => ({
   })),
 
   setWsStatus: (status) => set({ wsStatus: status }),
+
+  setCloudEnabled: (enabled) => set({ cloudEnabled: enabled }),
 
   setTheme: (theme) => {
     localStorage.setItem('wotp-theme', theme);
@@ -130,9 +146,49 @@ export const useStore = create<AppState>((set) => ({
       sentAt: m.created_at || m.sentAt,
     }))
   }),
-  setWebhookEvents: (events) => set({ webhookEvents: events }),
+  // Raw rows from GET /dashboard/api/webhooks are store.WebhookLog
+  // (event_type, status_code, created_at, no url) — map them onto the
+  // WebhookEvent shape the screen renders. Live WS updates already arrive
+  // pre-shaped (see the 'webhook.event' case below) and pass through as-is.
+  setWebhookEvents: (events) => set({
+    webhookEvents: events.map((e: any) => {
+      const statusCode = e.status_code ?? e.statusCode ?? 0;
+      return {
+        id: e.id,
+        event: e.event_type || e.event || 'unknown',
+        url: e.url,
+        payload: e.payload,
+        status: e.status ?? (statusCode >= 200 && statusCode < 300 ? 'success' : 'failed'),
+        statusCode,
+        timestamp: e.created_at || e.timestamp,
+      };
+    }),
+  }),
 
   clearLogs: () => set({ logs: [] }),
+
+  setProjects: (projects) => set((state) => {
+    // Keep the persisted selection if it's still valid, otherwise fall back
+    // to the first project (there's always at least a "default" one).
+    const stillValid = state.selectedProjectId && projects.some(p => p.id === state.selectedProjectId);
+    const selectedProjectId = stillValid ? state.selectedProjectId : (projects[0]?.id ?? null);
+    if (selectedProjectId) localStorage.setItem(PROJECT_STORAGE_KEY, selectedProjectId);
+    return { projects, selectedProjectId };
+  }),
+
+  selectProject: (id) => {
+    localStorage.setItem(PROJECT_STORAGE_KEY, id);
+    set({
+      selectedProjectId: id,
+      // Reset per-project view state so the previous project's data doesn't
+      // flash before the new project's fetchHistory() call resolves.
+      messages: [],
+      genericMessages: [],
+      webhookEvents: [],
+      connectionStatus: 'connecting',
+      cloudEnabled: false,
+    });
+  },
 
   addWsEvent: (event) => set((state) => {
     const logEntry: LogEntry = {

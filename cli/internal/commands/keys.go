@@ -23,7 +23,7 @@ func runKeys(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	anonKey, serviceKey, err := keys.ReadEnvFile(config.EnvPath(projectDir))
+	anonKey, serviceKey, rootKey, err := keys.ReadEnvFile(config.EnvPath(projectDir))
 	if err != nil {
 		return err
 	}
@@ -32,6 +32,9 @@ func runKeys(cmd *cobra.Command, args []string) error {
 	ui.Title("Wotp API Keys")
 	ui.Blank()
 	ui.PrintKeys(anonKey, serviceKey)
+	if rootKey != "" {
+		ui.KeyValue("Root key", rootKey)
+	}
 	ui.Blank()
 	ui.Warning("Never commit these keys. They are stored in wotp/.env (gitignored).")
 	ui.Blank()

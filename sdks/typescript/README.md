@@ -23,6 +23,18 @@ const { token, expiresAt } = await wotp.sendOTP('+212600000000')
 
 // Verify the code entered by the user
 const { verified } = await wotp.verifyOTP(token, '483920')
+
+// Send a text message
+const { messageId } = await wotp.sendText('+212600000000', 'Hello world')
+
+// Send a media message
+await wotp.sendMedia('+212600000000', { url: 'https://example.com/image.png' })
+
+// Show a typing indicator
+await wotp.setPresence('+212600000000', 'typing')
+
+// List chats
+const chats = await wotp.getChats()
 ```
 
 ## API Reference
@@ -57,16 +69,40 @@ Verify an OTP code against a previously issued token.
 
 ### `wotp.health()`
 
-Check the health of the Wotp instance.
+Instance-wide liveness check (no notion of a single connected phone number — an instance can host many projects, each with their own numbers).
 
-- **Returns:** `Promise<{ status: string; phone: string; uptimeSeconds: number }>`
+- **Returns:** `Promise<{ status: string; uptimeSeconds: number }>`
+
+### `wotp.sendText(phone, text)`
+
+Send a text message to the given phone number.
+
+- **Returns:** `Promise<{ messageId?: string }>`
+
+### `wotp.sendMedia(phone, media)`
+
+Send a media message. `media` is `{ url?: string; base64?: string; caption?: string }` — provide either `url` or `base64`.
+
+- **Returns:** `Promise<{ messageId?: string }>`
+
+### `wotp.getChats()`
+
+List the WhatsApp contacts visible to the project's connected numbers.
+
+- **Returns:** `Promise<Chat[]>` — each `Chat` is `{ jid: string; name?: string }`
+
+### `wotp.setPresence(phone, state)`
+
+Set the typing indicator for a chat without sending a message. `state` is `'typing' | 'paused'`.
+
+- **Returns:** `Promise<void>`
 
 ## Error Handling
 
 The SDK throws typed errors for business failures — no need to parse HTTP status codes:
 
 ```ts
-import { createClient, RateLimitError, ExpiredTokenError, InvalidCodeError } from '@wotp/client'
+import { createClient, RateLimitError, ExpiredTokenError, InvalidCodeError } from 'wotp-client'
 
 const wotp = createClient('http://localhost:54321', 'wotp_anon_xxx')
 

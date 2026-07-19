@@ -110,6 +110,7 @@ func (c *Client) SendOTP(ctx context.Context, phone string) (*SendOTPResponse, e
 	var raw struct {
 		Token     string `json:"token"`
 		ExpiresAt string `json:"expires_at"`
+		Warning   string `json:"warning,omitempty"`
 	}
 
 	if err := c.doRequest(ctx, http.MethodPost, "/v1/otp/send", body, &raw); err != nil {
@@ -124,6 +125,7 @@ func (c *Client) SendOTP(ctx context.Context, phone string) (*SendOTPResponse, e
 	return &SendOTPResponse{
 		Token:     raw.Token,
 		ExpiresAt: expiresAt,
+		Warning:   raw.Warning,
 	}, nil
 }
 
@@ -319,4 +321,14 @@ func (c *Client) GetChats(ctx context.Context) ([]Chat, error) {
 		return nil, err
 	}
 	return resp, nil
+}
+
+// SetPresence sets the typing indicator for a chat without sending a
+// message. state must be PresenceTyping or PresencePaused.
+func (c *Client) SetPresence(ctx context.Context, phone, state string) error {
+	body := SetPresenceRequest{Phone: phone, State: state}
+	var resp struct {
+		OK bool `json:"ok"`
+	}
+	return c.doRequest(ctx, http.MethodPost, "/v1/messages/presence", body, &resp)
 }

@@ -1,11 +1,11 @@
 /**
- * @wotp/client — Official TypeScript SDK for Wotp
+ * wotp-client — Official TypeScript SDK for Wotp
  *
  * WhatsApp OTP, self-hosted, one command.
  *
  * @example
  * ```ts
- * import { createClient } from '@wotp/client'
+ * import { createClient } from 'wotp-client'
  *
  * const wotp = createClient('http://localhost:54321', 'wotp_anon_xxx')
  *
@@ -22,6 +22,9 @@ export type {
   SendOTPResponse,
   VerifyOTPResponse,
   HealthResponse,
+  MessageResponse,
+  Chat,
+  PresenceState,
   WotpClientOptions,
 } from './types';
 

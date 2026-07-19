@@ -187,12 +187,8 @@ func ComposePath(projectDir string) string {
 	return filepath.Join(projectDir, "wotp", ".wotp", "docker-compose.yml")
 }
 
-// DataDir returns the path to the .wotp/data/ directory.
+// DataDir returns the path to the .wotp/data/ directory, mounted as a
+// single volume into the container (see cli/internal/docker/template.yml).
 func DataDir(projectDir string) string {
 	return filepath.Join(projectDir, "wotp", ".wotp", "data")
-}
-
-// SessionDir returns the path to the WhatsApp session data directory.
-func SessionDir(projectDir string) string {
-	return filepath.Join(projectDir, "wotp", ".wotp", "data", "session")
 }

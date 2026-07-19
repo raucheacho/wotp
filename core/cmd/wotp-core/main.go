@@ -16,17 +16,15 @@ import (
 	"github.com/wotp/core/internal/api"
 	"github.com/wotp/core/internal/config"
 	"github.com/wotp/core/internal/keys"
-	"github.com/wotp/core/internal/otp"
+	"github.com/wotp/core/internal/project"
 	"github.com/wotp/core/internal/store"
-	"github.com/wotp/core/internal/templates"
-	"github.com/wotp/core/internal/whatsapp"
 	"github.com/wotp/core/internal/ws"
 )
 
 func main() {
 	configPath := flag.String("config", "config.toml", "path to config.toml")
 	templatesPath := flag.String("templates", "templates.toml", "path to templates.toml")
-	dataDir := flag.String("data", "./data", "path to data directory (db + session)")
+	dataDir := flag.String("data", "./data", "path to data directory (control db + per-project data/session)")
 	flag.Parse()
 
 	// Setup structured logger
@@ -41,58 +39,84 @@ func main() {
 		"data_dir", *dataDir,
 	)
 
-	// Load config
+	// Load config (instance-wide settings only — see core/internal/config)
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		logger.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
 	logger.Info("config loaded",
-		"project", cfg.Project.Name,
+		"instance", cfg.Project.Name,
 		"port", cfg.API.Port,
 		"driver", cfg.Storage.Driver,
 	)
 
-	// Ensure data directory exists
-	if err := os.MkdirAll(*dataDir+"/db", 0755); err != nil {
-		logger.Error("failed to create data dir", "error", err)
-		os.Exit(1)
-	}
-	if err := os.MkdirAll(*dataDir+"/session", 0755); err != nil {
-		logger.Error("failed to create session dir", "error", err)
-		os.Exit(1)
-	}
-
-	// Initialize store
-	var dataStore store.Store
-	switch cfg.Storage.Driver {
-	case "sqlite":
-		dbPath := *dataDir + "/db/wotp.db"
-		dataStore, err = store.NewSQLiteStore(dbPath, logger)
-		if err != nil {
-			logger.Error("failed to init sqlite store", "error", err)
-			os.Exit(1)
-		}
-	default:
+	if cfg.Storage.Driver != "sqlite" {
 		logger.Error("unsupported storage driver", "driver", cfg.Storage.Driver)
 		os.Exit(1)
 	}
-	defer dataStore.Close()
 
-	// Initialize OTP engine
-	otpEngine := otp.NewEngine(dataStore, otp.EngineConfig{
-		CodeLength:             cfg.OTP.CodeLength,
-		ExpiryMinutes:          cfg.OTP.ExpiryMinutes,
-		MaxAttempts:            cfg.OTP.MaxAttempts,
-		RateLimitPerPhonePerHr: cfg.OTP.RateLimitPerPhonePerHr,
-	})
-
-	// Initialize API key manager and ensure keys exist
-	keyMgr := keys.NewManager(dataStore)
 	ctx := context.Background()
-	anonKey, serviceKey, err := keyMgr.EnsureKeys(ctx)
+
+	// wotp-core manages its own layout underneath dataDir (control.db +
+	// per-project subdirectories — see core/internal/project/registry.go),
+	// but the top-level directory itself must exist before we can open
+	// control.db in it.
+	if err := os.MkdirAll(*dataDir, 0755); err != nil {
+		logger.Error("failed to create data directory", "error", err)
+		os.Exit(1)
+	}
+
+	// Control store: projects, api keys, number registry — shared across
+	// the whole instance (see core/internal/store/control.go).
+	controlStore, err := store.NewSQLiteControlStore(*dataDir+"/control.db", logger)
 	if err != nil {
-		logger.Error("failed to ensure api keys", "error", err)
+		logger.Error("failed to init control store", "error", err)
+		os.Exit(1)
+	}
+	defer controlStore.Close()
+
+	// WebSocket hub is instance-wide; broadcasts are scoped per-project via
+	// ws.Event.ProjectID (see core/internal/ws/hub.go).
+	wsHub := ws.NewHub(logger)
+
+	registry := project.NewRegistry(controlStore, *dataDir, *templatesPath, wsHub, logger)
+
+	keyMgr := keys.NewManager(controlStore)
+	server := api.NewServer(cfg, controlStore, registry, keyMgr, wsHub, logger)
+
+	// Forward each project's WhatsApp events to its webhooks/dashboard as
+	// soon as that project's Runtime is first loaded.
+	registry.SetOnRuntimeLoaded(server.StartEventForwarder)
+
+	// Ensure an instance root key exists (authorizes /v1/projects*).
+	rootKey, err := keyMgr.EnsureRootKey(ctx)
+	if err != nil {
+		logger.Error("failed to ensure root key", "error", err)
+		os.Exit(1)
+	}
+	if rootKey != nil {
+		fmt.Printf("✔ Root key:    %s\n", rootKey.FullKey)
+	}
+
+	// Ensure a "default" project exists so a fresh install works out of the
+	// box without an explicit `wotp project create` step.
+	defaultProject, err := controlStore.GetProjectBySlug(ctx, "default")
+	if err != nil {
+		logger.Error("failed to look up default project", "error", err)
+		os.Exit(1)
+	}
+	if defaultProject == nil {
+		defaultProject, err = registry.Create(ctx, "default", cfg.Project.Name)
+		if err != nil {
+			logger.Error("failed to create default project", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	anonKey, serviceKey, err := keyMgr.EnsureKeysWithEnvFallback(ctx, defaultProject.ID)
+	if err != nil {
+		logger.Error("failed to ensure api keys for default project", "error", err)
 		os.Exit(1)
 	}
 	if anonKey != nil {
@@ -102,71 +126,52 @@ func main() {
 		fmt.Printf("✔ Service key: %s\n", serviceKey.FullKey)
 	}
 
-	// Load templates
-	tmplStore, err := templates.NewStore(*templatesPath, cfg.Templates.DefaultLocale)
+	// Eagerly load and connect the default project so a fresh install
+	// immediately shows a QR to scan, matching today's zero-config UX.
+	defaultRuntime, err := registry.Get(ctx, defaultProject.ID)
 	if err != nil {
-		logger.Error("failed to load templates", "error", err)
+		logger.Error("failed to load default project", "error", err)
 		os.Exit(1)
 	}
-	logger.Info("templates loaded", "locales", tmplStore.Locales())
+	// Skip the whatsmeow auto-pairing prompt when this project is configured
+	// to send OTPs through the Cloud API instead (see project.Settings.Cloud)
+	// — it has no whatsmeow number to pair in the first place.
+	if !defaultRuntime.Settings.Cloud.Enabled && !defaultRuntime.WA.IsConnected() && len(defaultRuntime.WA.Numbers()) == 0 {
+		connectCtx, connectCancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer connectCancel()
 
-	// Initialize WhatsApp client
-	waClient, err := whatsapp.NewMeowClient(whatsapp.MeowConfig{
-		DBPath:     *dataDir + "/session/whatsapp.db",
-		DeviceName: cfg.WhatsApp.DeviceName,
-		Backoff:    cfg.WhatsApp.ReconnectBackoffSeconds,
-		Logger:     logger,
-	})
-	if err != nil {
-		logger.Error("failed to init whatsapp client", "error", err)
-		os.Exit(1)
-	}
-
-	// Connect to WhatsApp
-	connectCtx, connectCancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer connectCancel()
-
-	qrChan, err := waClient.Connect(connectCtx)
-	if err != nil {
-		logger.Error("failed to connect whatsapp", "error", err)
-		os.Exit(1)
-	}
-
-	// Initialize WebSocket hub
-	wsHub := ws.NewHub(logger)
-
-	// Create API server
-	server := api.NewServer(cfg, otpEngine, keyMgr, waClient, tmplStore, wsHub, logger)
-
-	// Handle QR codes in background
-	if qrChan != nil {
+		qrChan, err := defaultRuntime.WA.Pair(connectCtx)
+		if err != nil {
+			logger.Error("failed to start pairing default project", "error", err)
+			os.Exit(1)
+		}
 		go func() {
 			for qr := range qrChan {
 				logger.Info("new QR code available, scan with WhatsApp")
-				server.SetLatestQR(qr)
+				defaultRuntime.SetLatestQR(qr)
 			}
 		}()
 	}
 
-	// Start event forwarder (WhatsApp → WebSocket)
-	evtCtx, evtCancel := context.WithCancel(ctx)
-	defer evtCancel()
-	go server.StartEventForwarder(evtCtx)
-
-	// Start OTP expiry cleanup ticker
+	// Periodically expire stale OTPs for every project currently loaded in
+	// memory (dormant, never-accessed projects have nothing to sweep).
+	tickerCtx, tickerCancel := context.WithCancel(ctx)
+	defer tickerCancel()
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-evtCtx.Done():
+			case <-tickerCtx.Done():
 				return
 			case <-ticker.C:
-				expired, err := dataStore.ExpireStaleOTPs(ctx, time.Now())
-				if err != nil {
-					logger.Error("expire stale otps error", "error", err)
-				} else if expired > 0 {
-					logger.Info("expired stale otps", "count", expired)
+				for _, rt := range registry.LoadedRuntimes() {
+					expired, err := rt.Store.ExpireStaleOTPs(ctx, time.Now())
+					if err != nil {
+						logger.Error("expire stale otps error", "project_id", rt.Project.ID, "error", err)
+					} else if expired > 0 {
+						logger.Info("expired stale otps", "project_id", rt.Project.ID, "count", expired)
+					}
 				}
 			}
 		}
@@ -185,7 +190,7 @@ func main() {
 	<-quit
 
 	logger.Info("shutting down...")
-	evtCancel()
+	tickerCancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer shutdownCancel()
@@ -194,6 +199,8 @@ func main() {
 		logger.Error("http server shutdown error", "error", err)
 	}
 
-	waClient.Disconnect()
+	for _, rt := range registry.LoadedRuntimes() {
+		rt.WA.Disconnect()
+	}
 	logger.Info("wotp-core stopped")
 }

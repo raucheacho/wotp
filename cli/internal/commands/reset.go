@@ -26,21 +26,23 @@ func runReset(cmd *cobra.Command, args []string) error {
 	}
 
 	ui.Blank()
-	ui.DangerBox("This will delete your WhatsApp session.\nYou will need to scan a new QR code to reconnect.")
+	ui.DangerBox("This will delete ALL instance data: every project's WhatsApp session,\nOTP/message history, and API keys. You will need to scan a new QR\ncode and recreate any additional projects afterwards.")
 	ui.Blank()
 
-	if !ui.ConfirmPrompt("Delete WhatsApp session and restart?") {
+	if !ui.ConfirmPrompt("Delete all data and restart?") {
 		ui.Dim("  Cancelled.")
 		ui.Blank()
 		return nil
 	}
 
-	// Delete session directory
-	sessionDir := config.SessionDir(projectDir)
-	if err := os.RemoveAll(sessionDir); err != nil {
-		return fmt.Errorf("deleting session directory: %w", err)
+	// Delete the entire data directory (control.db + every project's
+	// data.db/session.db — wotp-core manages its own layout underneath it,
+	// see core/internal/project/registry.go).
+	dataDir := config.DataDir(projectDir)
+	if err := os.RemoveAll(dataDir); err != nil {
+		return fmt.Errorf("deleting data directory: %w", err)
 	}
-	ui.Success("WhatsApp session deleted")
+	ui.Success("Instance data deleted")
 
 	// Restart the containers
 	ui.Blank()

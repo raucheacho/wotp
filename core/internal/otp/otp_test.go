@@ -13,13 +13,11 @@ import (
 
 type memStore struct {
 	otps map[string]*store.OTPRequest
-	keys map[string]*store.APIKey
 }
 
 func newMemStore() *memStore {
 	return &memStore{
 		otps: make(map[string]*store.OTPRequest),
-		keys: make(map[string]*store.APIKey),
 	}
 }
 
@@ -72,36 +70,6 @@ func (m *memStore) CountRecentOTPs(_ context.Context, phone string, since time.T
 
 func (m *memStore) ExpireStaleOTPs(_ context.Context, _ time.Time) (int64, error) {
 	return 0, nil
-}
-
-func (m *memStore) CreateAPIKey(_ context.Context, key *store.APIKey) error {
-	m.keys[key.KeyPrefix] = key
-	return nil
-}
-
-func (m *memStore) GetAPIKeyByPrefix(_ context.Context, prefix string) (*store.APIKey, error) {
-	k, ok := m.keys[prefix]
-	if !ok {
-		return nil, nil
-	}
-	return k, nil
-}
-
-func (m *memStore) ListAPIKeys(_ context.Context) ([]store.APIKey, error) {
-	var out []store.APIKey
-	for _, k := range m.keys {
-		out = append(out, *k)
-	}
-	return out, nil
-}
-
-func (m *memStore) DeleteAPIKeysByTier(_ context.Context, tier string) error {
-	for prefix, k := range m.keys {
-		if k.Tier == tier {
-			delete(m.keys, prefix)
-		}
-	}
-	return nil
 }
 
 func (m *memStore) GetRecentOTPs(_ context.Context, limit int) ([]store.OTPRequest, error) {

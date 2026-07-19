@@ -1,5 +1,5 @@
 /**
- * @wotp/client — Typed error hierarchy.
+ * wotp-client — Typed error hierarchy.
  *
  * Business errors are thrown as typed exceptions so callers can
  * catch specific failure modes without parsing HTTP status codes.

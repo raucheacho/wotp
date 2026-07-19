@@ -52,12 +52,12 @@ type EngineConfig struct {
 
 // Engine orchestrates OTP generation, storage, and verification.
 type Engine struct {
-	store  store.Store
+	store  store.ProjectStore
 	config EngineConfig
 }
 
 // NewEngine creates a new OTP engine with the given store and config.
-func NewEngine(s store.Store, cfg EngineConfig) *Engine {
+func NewEngine(s store.ProjectStore, cfg EngineConfig) *Engine {
 	return &Engine{
 		store:  s,
 		config: cfg,
@@ -65,7 +65,7 @@ func NewEngine(s store.Store, cfg EngineConfig) *Engine {
 }
 
 // Store returns the underlying datastore.
-func (e *Engine) Store() store.Store {
+func (e *Engine) Store() store.ProjectStore {
 	return e.store
 }
 

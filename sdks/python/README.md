@@ -31,6 +31,9 @@ text_res = client.send_text("+212600000000", "Hello world")
 # Send a media message
 media_res = client.send_media("+212600000000", url="https://example.com/image.png")
 
+# Show a typing indicator
+client.set_presence("+212600000000", "typing")
+
 # List chats
 chats = client.get_chats()
 
@@ -69,9 +72,31 @@ Verify an OTP code against a previously issued token.
 
 ### `client.health()`
 
-Check the health of the Wotp instance.
+Instance-wide liveness check (no notion of a single connected phone number — an instance can host many projects, each with their own numbers).
 
-- **Returns:** `HealthResponse` with `.status`, `.phone`, `.uptime_seconds`
+- **Returns:** `HealthResponse` with `.status`, `.uptime_seconds`
+
+### `client.send_text(phone, text)`
+
+Send a text message to the given phone number.
+
+- **Returns:** `MessageResponse` with `.message_id`
+
+### `client.send_media(phone, url=None, base64=None, caption=None)`
+
+Send a media message. Provide either `url` or `base64`.
+
+- **Returns:** `MessageResponse` with `.message_id`
+
+### `client.get_chats()`
+
+List the WhatsApp contacts visible to the project's connected numbers.
+
+- **Returns:** `list[Chat]` — each `Chat` has `.jid` and `.name`
+
+### `client.set_presence(phone, state)`
+
+Set the typing indicator for a chat without sending a message. `state` is `"typing"` or `"paused"`.
 
 ## Error Handling
 

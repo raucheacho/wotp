@@ -36,15 +36,20 @@ type OTPRequest struct {
 // APIKey represents a stored API key.
 type APIKey struct {
 	ID        string    `json:"id"`
+	ProjectID string    `json:"project_id,omitempty"` // set once callers move to ControlStore (see control.go)
 	KeyHash   string    `json:"-"`
 	KeyPrefix string    `json:"key_prefix"`
 	Tier      string    `json:"tier"` // "anon" or "service"
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Store is the data access interface for wotp-core.
+// ProjectStore is the data access interface for a single project's data plane
+// (otps, generic messages, webhook logs). Every project on a wotp-core
+// instance gets its own ProjectStore, backed by its own SQLite file — see
+// ControlStore (control.go) for the shared, instance-wide data (projects,
+// api_keys, numbers).
 // Implementations must be safe for concurrent use.
-type Store interface {
+type ProjectStore interface {
 	// OTP operations
 	CreateOTPRequest(ctx context.Context, req *OTPRequest) error
 	GetOTPRequestByToken(ctx context.Context, token string) (*OTPRequest, error)
@@ -55,12 +60,6 @@ type Store interface {
 	CountRecentOTPs(ctx context.Context, phone string, since time.Time) (int, error)
 	GetRecentOTPs(ctx context.Context, limit int) ([]OTPRequest, error)
 	ExpireStaleOTPs(ctx context.Context, now time.Time) (int64, error)
-
-	// API key operations
-	CreateAPIKey(ctx context.Context, key *APIKey) error
-	GetAPIKeyByPrefix(ctx context.Context, prefix string) (*APIKey, error)
-	ListAPIKeys(ctx context.Context) ([]APIKey, error)
-	DeleteAPIKeysByTier(ctx context.Context, tier string) error
 
 	// Generic Messages
 	SaveGenericMessage(ctx context.Context, msg *GenericMessage) error

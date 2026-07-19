@@ -5,21 +5,21 @@ import {
   Navigate,
   NavLink,
 } from "react-router-dom";
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
+import { ChevronsUpDown, Check } from "lucide-react";
 import { useStore } from "./store";
 import { useWebSocket } from "./hooks/useWebSocket";
-import type { WsEvent } from "./types";
+import type { WsEvent, WaNumber, CloudStatus } from "./types";
 
 import logoDark from "./assets/logo_dark.svg";
 import logoLight from "./assets/logo_light.svg";
 
 // Screens
 import OverviewScreen from "./screens/OverviewScreen";
-import OtpEngineScreen from "./screens/OtpEngineScreen";
-import MessagingApiScreen from "./screens/MessagingApiScreen";
+import NumbersScreen from "./screens/NumbersScreen";
+import ActivityScreen from "./screens/ActivityScreen";
 import WebhooksScreen from "./screens/WebhooksScreen";
 import LogsScreen from "./screens/LogsScreen";
-import QRScreen from "./screens/QRScreen";
 
 const OverviewIcon = () => (
   <svg
@@ -36,7 +36,7 @@ const OverviewIcon = () => (
   </svg>
 );
 
-const OtpIcon = () => (
+const NumbersIcon = () => (
   <svg
     viewBox="0 0 24 24"
     width="20"
@@ -45,11 +45,12 @@ const OtpIcon = () => (
     strokeWidth="2"
     fill="none"
   >
-    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+    <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+    <line x1="12" y1="18" x2="12.01" y2="18"></line>
   </svg>
 );
 
-const MessageIcon = () => (
+const ActivityIcon = () => (
   <svg
     viewBox="0 0 24 24"
     width="20"
@@ -76,13 +77,128 @@ const WebhookIcon = () => (
   </svg>
 );
 
+function ProjectSwitcher() {
+  const projects = useStore((state) => state.projects);
+  const selectedProjectId = useStore((state) => state.selectedProjectId);
+  const selectProject = useStore((state) => state.selectProject);
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  if (projects.length === 0) return null;
+
+  const selected = projects.find((p) => p.id === selectedProjectId);
+
+  return (
+    <div className="px-6 pb-4">
+      <label className="text-xs text-muted-foreground mb-1 block">Project</label>
+      <div ref={rootRef} className="relative">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          className="w-full flex items-center justify-between gap-2 text-sm bg-muted border rounded-md px-2.5 py-1.5 text-foreground hover:bg-muted/70 transition-colors"
+        >
+          <span className="truncate">{selected?.name ?? "Select a project"}</span>
+          <ChevronsUpDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+        </button>
+
+        {open && (
+          <div
+            role="listbox"
+            className="absolute left-0 right-0 top-[calc(100%+4px)] z-50 max-h-64 overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-lg py-1"
+          >
+            {projects.map((p) => {
+              const isSelected = p.id === selectedProjectId;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  onClick={() => {
+                    selectProject(p.id);
+                    setOpen(false);
+                  }}
+                  className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-left transition-colors ${
+                    isSelected ? "text-primary" : "text-foreground hover:bg-muted"
+                  }`}
+                >
+                  <span className="truncate">{p.name}</span>
+                  {isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const LogsIcon = () => (
+  <svg
+    viewBox="0 0 24 24"
+    width="20"
+    height="20"
+    stroke="currentColor"
+    strokeWidth="2"
+    fill="none"
+  >
+    <polyline points="4 17 10 11 4 5"></polyline>
+    <line x1="12" y1="19" x2="20" y2="19"></line>
+  </svg>
+);
+
+function NavSection({ label, children }: { label?: string; children: React.ReactNode }) {
+  return (
+    <div className="mt-4 first:mt-0">
+      {label && (
+        <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+          {label}
+        </div>
+      )}
+      <div className="flex flex-col gap-1">{children}</div>
+    </div>
+  );
+}
+
+function NavItem({ to, icon, label }: { to: string; icon: React.ReactNode; label: string }) {
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        `flex items-center gap-3 px-3 py-2 rounded-md font-medium transition-colors ${isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`
+      }
+    >
+      {icon}
+      <span>{label}</span>
+    </NavLink>
+  );
+}
+
 function Sidebar() {
-  const connectionStatus = useStore((state) => state.connectionStatus);
   const theme = useStore((state) => state.theme);
 
   return (
     <aside className="flex flex-col h-full bg-background border-r w-62.5 shrink-0">
-      <div className="p-6 flex items-end gap-3 border-b mb-4">
+      <div className="p-6 flex items-end gap-3 border-b">
         <img
           src={theme === "dark" ? logoDark : logoLight}
           alt="Wotp Logo"
@@ -93,85 +209,65 @@ function Sidebar() {
         </span>
       </div>
 
-      <nav className="flex flex-col gap-1 px-4">
-        <NavLink
-          to="/overview"
-          className={({ isActive }) =>
-            `flex items-center gap-3 px-3 py-2 rounded-md font-medium transition-colors ${isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`
-          }
-        >
-          <OverviewIcon />
-          <span>Overview</span>
-        </NavLink>
-        <NavLink
-          to="/otp"
-          className={({ isActive }) =>
-            `flex items-center gap-3 px-3 py-2 rounded-md font-medium transition-colors ${isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`
-          }
-        >
-          <OtpIcon />
-          <span>OTP Engine</span>
-        </NavLink>
-        <NavLink
-          to="/messages"
-          className={({ isActive }) =>
-            `flex items-center gap-3 px-3 py-2 rounded-md font-medium transition-colors ${isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`
-          }
-        >
-          <MessageIcon />
-          <span>Messaging API</span>
-        </NavLink>
-        <NavLink
-          to="/webhooks"
-          className={({ isActive }) =>
-            `flex items-center gap-3 px-3 py-2 rounded-md font-medium transition-colors ${isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`
-          }
-        >
-          <WebhookIcon />
-          <span>Webhooks</span>
-        </NavLink>
-        <div className="my-4 border-t"></div>
-        <NavLink
-          to="/logs"
-          className={({ isActive }) =>
-            `flex items-center gap-3 px-3 py-2 rounded-md font-medium transition-colors ${isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`
-          }
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="20"
-            height="20"
-            stroke="currentColor"
-            strokeWidth="2"
-            fill="none"
-          >
-            <polyline points="4 17 10 11 4 5"></polyline>
-            <line x1="12" y1="19" x2="20" y2="19"></line>
-          </svg>
-          <span>Logs</span>
-        </NavLink>
+      <ProjectSwitcher />
+
+      {/* Grouped by what an operator is checking, not one tab per API
+          resource — Numbers/Webhooks are the infra you administer, Activity
+          is what went out, Logs is raw diagnostics. */}
+      <nav className="flex flex-col px-4">
+        <NavSection>
+          <NavItem to="/overview" icon={<OverviewIcon />} label="Overview" />
+        </NavSection>
+
+        <NavSection label="Infra">
+          <NavItem to="/numbers" icon={<NumbersIcon />} label="Numbers" />
+          <NavItem to="/webhooks" icon={<WebhookIcon />} label="Webhooks" />
+        </NavSection>
+
+        <NavSection label="Activity">
+          <NavItem to="/activity" icon={<ActivityIcon />} label="Activity" />
+        </NavSection>
+
+        <NavSection label="Diagnostics">
+          <NavItem to="/logs" icon={<LogsIcon />} label="Logs" />
+        </NavSection>
       </nav>
 
       <div className="mt-auto p-6">
-        <div className="flex items-center gap-2 p-3 bg-muted rounded-lg text-sm">
-          <div
-            className={`w-2 h-2 rounded-full ${connectionStatus === "connected" ? "bg-[#25D366] shadow-[0_0_8px_rgba(37,211,102,0.5)]" : "bg-muted-foreground"}`}
-          ></div>
-          <span className="text-muted-foreground font-medium">
-            {connectionStatus === "connected"
-              ? "Engine Online"
-              : "Engine Offline"}
-          </span>
-        </div>
+        <ConnectionIndicator />
       </div>
     </aside>
   );
 }
 
-function Layout() {
+// Reflects whichever backend is actually carrying this project's OTP
+// traffic — whatsmeow (a paired, connected number) or Cloud API (enabled
+// and verified) — rather than a single stale "engine" light that only ever
+// knew about whatsmeow. See the Numbers screen for the per-backend detail.
+function ConnectionIndicator() {
   const connectionStatus = useStore((state) => state.connectionStatus);
+  const cloudEnabled = useStore((state) => state.cloudEnabled);
+  const ok = connectionStatus === "connected";
+
+  return (
+    <div className="flex items-center gap-2 p-3 bg-muted rounded-lg text-sm">
+      <div
+        className={`w-2 h-2 rounded-full shrink-0 ${ok ? "bg-[#25D366] shadow-[0_0_8px_rgba(37,211,102,0.5)]" : "bg-muted-foreground"}`}
+      ></div>
+      <span className="text-muted-foreground font-medium">
+        {ok ? (cloudEnabled ? "Operational (Cloud API)" : "Operational") : "Not connected"}
+      </span>
+    </div>
+  );
+}
+
+function Layout() {
   const theme = useStore((state) => state.theme);
+  const projects = useStore((state) => state.projects);
+  const selectedProjectId = useStore((state) => state.selectedProjectId);
+  const setProjects = useStore((state) => state.setProjects);
   const setConnectionStatus = useStore((state) => state.setConnectionStatus);
+  const setCloudEnabled = useStore((state) => state.setCloudEnabled);
   const setMessages = useStore((state) => state.setMessages);
   const addWsEvent = useStore((state) => state.addWsEvent);
   const setWsStatus = useStore((state) => state.setWsStatus);
@@ -185,29 +281,49 @@ function Layout() {
     }
   }, [theme]);
 
+  // Projects list is fetched once; the store picks/keeps a selection.
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await fetch("/dashboard/api/projects");
+        if (res.ok && mounted) setProjects(await res.json());
+      } catch {}
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [setProjects]);
+
   const fetchHistory = useCallback(async () => {
+    if (!selectedProjectId) return;
+    const qs = `?project_id=${encodeURIComponent(selectedProjectId)}`;
     try {
-      const res = await fetch("/dashboard/api/messages");
+      const res = await fetch(`/dashboard/api/messages${qs}`);
       if (res.ok) {
         setMessages(await res.json());
       }
     } catch {}
     try {
-      const res = await fetch("/dashboard/api/generic-messages");
+      const res = await fetch(`/dashboard/api/generic-messages${qs}`);
       if (res.ok) {
         useStore.getState().setGenericMessages(await res.json());
       }
     } catch {}
     try {
-      const res = await fetch("/dashboard/api/webhooks");
+      const res = await fetch(`/dashboard/api/webhooks${qs}`);
       if (res.ok) {
         useStore.getState().setWebhookEvents(await res.json());
       }
     } catch {}
-  }, [setMessages]);
+  }, [selectedProjectId, setMessages]);
+
+  const wsUrl = selectedProjectId
+    ? `/v1/ws/events?project_id=${encodeURIComponent(selectedProjectId)}`
+    : "/v1/ws/events";
 
   const { status: wsStatus } = useWebSocket({
-    url: "/v1/ws/events",
+    url: wsUrl,
     onMessage: (data: unknown) => {
       const event = data as WsEvent;
       if (event && event.type) {
@@ -227,29 +343,67 @@ function Layout() {
     setWsStatus(wsStatus);
   }, [wsStatus, setWsStatus]);
 
+  // A project is "connected" if EITHER backend can actually send: its
+  // whatsmeow number is connected, or its Cloud API backend is enabled and
+  // verified. Checking only whatsmeow.Pool.Numbers() (as before) would trap
+  // a Cloud-only project on the QR pairing screen forever, since Cloud API
+  // has no QR to scan.
   useEffect(() => {
-    const checkHealth = async () => {
+    if (!selectedProjectId) return;
+
+    const checkConnection = async () => {
+      let waConnected = false;
+      let cloudOk = false;
+      let cloudEnabled = false;
       try {
-        const res = await fetch("/v1/health");
+        const res = await fetch(
+          `/dashboard/api/numbers?project_id=${encodeURIComponent(selectedProjectId)}`,
+        );
         if (res.ok) {
-          const data = await res.json();
-          setConnectionStatus(data.status || "disconnected", data.phone);
+          const numbers: WaNumber[] = await res.json();
+          waConnected = numbers.some((n) => n.connected);
         }
       } catch {
         // API not available yet
       }
+      try {
+        const res = await fetch(
+          `/dashboard/api/cloud-status?project_id=${encodeURIComponent(selectedProjectId)}`,
+        );
+        if (res.ok) {
+          const status: CloudStatus = await res.json();
+          cloudEnabled = status.enabled;
+          cloudOk = status.enabled && status.connected;
+        }
+      } catch {
+        // API not available yet
+      }
+      setCloudEnabled(cloudEnabled);
+      setConnectionStatus(waConnected || cloudOk ? "connected" : "disconnected");
     };
 
-    checkHealth();
+    checkConnection();
     fetchHistory();
-    const interval = setInterval(checkHealth, 30000);
+    const interval = setInterval(checkConnection, 30000);
     return () => clearInterval(interval);
-  }, [setConnectionStatus, fetchHistory]);
+  }, [selectedProjectId, setConnectionStatus, setCloudEnabled, fetchHistory]);
 
-  if (connectionStatus !== "connected" && connectionStatus !== "connecting") {
-    return <QRScreen />;
+  if (projects.length === 0) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center text-muted-foreground">
+        Loading projects…
+      </div>
+    );
   }
 
+  // Navigation is always available, regardless of connection state — a
+  // fresh or disconnected project no longer forces a full-page whatsmeow QR
+  // takeover (see the removed QRScreen). That screen assumed whatsmeow was
+  // the only way to get started; now Cloud API is an equally valid choice,
+  // and railroading every new project into scanning a QR made it impossible
+  // to reach the Numbers screen's own "configure Cloud API instead" path.
+  // Overview's status cards + the alert banner communicate what's missing;
+  // Numbers is where you actually act on it (pair a number or enable Cloud).
   return (
     <div className="flex h-screen w-screen bg-background overflow-hidden text-foreground">
       <Sidebar />
@@ -257,8 +411,8 @@ function Layout() {
         <Routes>
           <Route path="/" element={<Navigate to="/overview" replace />} />
           <Route path="/overview" element={<OverviewScreen />} />
-          <Route path="/otp" element={<OtpEngineScreen />} />
-          <Route path="/messages" element={<MessagingApiScreen />} />
+          <Route path="/numbers" element={<NumbersScreen />} />
+          <Route path="/activity" element={<ActivityScreen />} />
           <Route path="/webhooks" element={<WebhooksScreen />} />
           <Route path="/logs" element={<LogsScreen />} />
           <Route path="*" element={<Navigate to="/overview" replace />} />

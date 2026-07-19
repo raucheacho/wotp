@@ -15,6 +15,14 @@ class SendOTPResponse(BaseModel):
         alias="expires_at",
         description="Timestamp when this OTP expires.",
     )
+    warning: str | None = Field(
+        default=None,
+        description=(
+            'Set to "message_send_failed" when the OTP was created but the '
+            "WhatsApp send itself failed (e.g. no number is connected yet). "
+            "The token is still valid — only delivery failed."
+        ),
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -37,10 +45,15 @@ class VerifyOTPResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """Response from GET /health."""
+    """Response from GET /v1/health.
 
-    status: str = Field(description="WhatsApp connection status.")
-    phone: str = Field(description="Connected phone number.")
+    This is an instance-wide liveness check — it has no notion of a single
+    connected phone number, since one instance can host many projects each
+    with their own numbers. See :meth:`WotpClient.get_chats` or the
+    dashboard for per-project connection state.
+    """
+
+    status: str = Field(description='"ok" when the instance is up.')
     uptime_seconds: int = Field(
         alias="uptime_seconds",
         description="Uptime in seconds.",
@@ -48,18 +61,23 @@ class HealthResponse(BaseModel):
 
     model_config = {"populate_by_name": True}
 
+
 class MessageResponse(BaseModel):
-    """Response from sending a message."""
-    success: bool
-    messageId: str | None = Field(default=None, alias="messageId")
+    """Response from POST /v1/messages/send.
+
+    There is no ``success`` field — a failed send comes back as a non-2xx
+    status and raises a :class:`~wotp.errors.WotpError` instead.
+    """
+
+    message_id: str | None = Field(default=None, alias="message_id")
 
     model_config = {"populate_by_name": True}
 
+
 class Chat(BaseModel):
-    """Chat object representation."""
-    id: str
+    """A WhatsApp contact visible to one of the project's connected numbers."""
+
+    jid: str
     name: str | None = None
-    unreadCount: int | None = Field(default=None, alias="unreadCount")
-    timestamp: int | None = None
 
     model_config = {"populate_by_name": True}

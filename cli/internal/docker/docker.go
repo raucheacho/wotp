@@ -58,16 +58,14 @@ func RenderCompose(cfg config.Config, projectDir string) error {
 	return nil
 }
 
-// EnsureDataDirs creates the data directories for volumes.
+// EnsureDataDirs creates the data directory mounted into the container.
+// wotp-core manages its own layout underneath it (control.db + per-project
+// subdirectories — see core/internal/project/registry.go); the CLI only
+// needs the mount point itself to exist before `docker compose up`.
 func EnsureDataDirs(projectDir string) error {
-	dirs := []string{
-		filepath.Join(config.DataDir(projectDir), "session"),
-		filepath.Join(config.DataDir(projectDir), "db"),
-	}
-	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("creating data directory %s: %w", dir, err)
-		}
+	dir := config.DataDir(projectDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating data directory %s: %w", dir, err)
 	}
 	return nil
 }

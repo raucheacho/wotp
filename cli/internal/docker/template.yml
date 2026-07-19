@@ -3,8 +3,7 @@ services:
     image: ghcr.io/raucheacho/wotp:{{.Version}}
     restart: always
     volumes:
-      - ./data/session:/data/session
-      - ./data/db:/data/db
+      - ./data:/data
       - ../config.toml:/app/config.toml:ro
       - ../seed/templates.toml:/app/templates.toml:ro
     env_file: .env

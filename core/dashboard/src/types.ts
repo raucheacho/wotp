@@ -1,6 +1,9 @@
 // WebSocket event types from the backend
 export interface WsEvent {
-  type: 'message.sent' | 'message.delivered' | 'message.read' | 'message.failed' | 'session.disconnected' | 'session.reconnected' | 'generic.message.sent' | 'webhook.event' | 'otp.verified';
+  type: 'message.sent' | 'message.delivered' | 'message.read' | 'message.failed' | 'session.disconnected' | 'session.reconnected' | 'generic.message.sent' | 'webhook.event' | 'otp.verified' | 'number.qr';
+  project_id?: string;
+  /** JID of the number that handled this event — useful once a project has more than one. */
+  from?: string;
   phone?: string;
   to?: string;
   message_id?: string;
@@ -42,7 +45,9 @@ export interface GenericMessage {
 export interface WebhookEvent {
   id: string;
   event: string;
-  url: string;
+  /** Only present on live WS updates (ws.Event.URL) — REST history rows
+   * (store.WebhookLog) don't record which endpoint was called. */
+  url?: string;
   payload: any;
   status: 'success' | 'failed' | 'retrying';
   statusCode: number;
@@ -57,9 +62,34 @@ export interface LogEntry {
 }
 
 export interface HealthResponse {
-  status: 'connected' | 'disconnected' | 'connecting';
-  phone?: string;
+  status: 'ok';
   uptime_seconds?: number;
+}
+
+// A tenant on this wotp instance — see core/internal/store.Project.
+export interface Project {
+  id: string;
+  slug: string;
+  name: string;
+  created_at: string;
+}
+
+// A project's whatsmeow number — see whatsapp.Pool.Numbers(). At most one.
+export interface WaNumber {
+  jid: string;
+  phone: string;
+  connected: boolean;
+}
+
+// A project's Meta Cloud API backend status — see api.CloudStatus. Never
+// includes the access token (write-only, see the settings form).
+export interface CloudStatus {
+  enabled: boolean;
+  connected: boolean;
+  phone_number_id?: string;
+  display_phone?: string;
+  otp_template_name?: string;
+  otp_template_language?: string;
 }
 
 export interface DashboardStats {

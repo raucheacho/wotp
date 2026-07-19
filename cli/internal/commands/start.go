@@ -76,7 +76,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	ui.PrintQRInstructions(cfg.API.Port)
 
 	// Read API keys from .env
-	anonKey, serviceKey, err := keys.ReadEnvFile(config.EnvPath(projectDir))
+	anonKey, serviceKey, _, err := keys.ReadEnvFile(config.EnvPath(projectDir))
 	if err != nil {
 		return fmt.Errorf("reading API keys: %w", err)
 	}

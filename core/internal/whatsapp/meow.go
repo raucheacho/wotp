@@ -27,6 +27,8 @@ type MeowClient struct {
 	deviceName  string
 	backoff        []int
 	simulateTyping bool
+	ignoreGroups   bool
+	ignoreStatus   bool
 	mu             sync.RWMutex
 	connected      bool
 	reconnecting   bool
@@ -39,6 +41,10 @@ type MeowConfig struct {
 	Backoff        []int
 	Logger         *slog.Logger
 	SimulateTyping bool
+	// IgnoreGroups drops inbound events from group chats. Safe default: true.
+	IgnoreGroups bool
+	// IgnoreStatus drops inbound WhatsApp status (stories) broadcast events. Safe default: true.
+	IgnoreStatus bool
 }
 
 // NewMeowClient creates a new whatsmeow-based WhatsApp client.
@@ -60,6 +66,8 @@ func NewMeowClient(cfg MeowConfig) (*MeowClient, error) {
 		deviceName:     cfg.DeviceName,
 		backoff:        cfg.Backoff,
 		simulateTyping: cfg.SimulateTyping,
+		ignoreGroups:   cfg.IgnoreGroups,
+		ignoreStatus:   cfg.IgnoreStatus,
 	}, nil
 }
 
@@ -129,14 +137,7 @@ func (m *MeowClient) SendMessage(ctx context.Context, phone, message string) (*S
 		return nil, fmt.Errorf("whatsapp: not connected")
 	}
 
-	// Strip non-digit characters for WhatsApp JID
-	var cleanPhone string
-	for _, r := range phone {
-		if r >= '0' && r <= '9' {
-			cleanPhone += string(r)
-		}
-	}
-	jid := types.NewJID(cleanPhone, types.DefaultUserServer)
+	jid := toJID(phone)
 
 	if m.simulateTyping {
 		_ = m.client.SendChatPresence(ctx, jid, types.ChatPresenceComposing, types.ChatPresenceMediaText)
@@ -166,6 +167,31 @@ func (m *MeowClient) SendMessage(ctx context.Context, phone, message string) (*S
 	})
 
 	return &SendResult{MessageID: msgID}, nil
+}
+
+// SetPresence sets the chat presence (typing indicator) for the given phone
+// number without sending a message. state must be PresenceTyping or PresencePaused.
+func (m *MeowClient) SetPresence(ctx context.Context, phone, state string) error {
+	if !m.IsConnected() {
+		return fmt.Errorf("whatsapp: not connected")
+	}
+
+	var presence types.ChatPresence
+	switch state {
+	case PresenceTyping:
+		presence = types.ChatPresenceComposing
+	case PresencePaused:
+		presence = types.ChatPresencePaused
+	default:
+		return fmt.Errorf("whatsapp: invalid presence state %q, must be %q or %q", state, PresenceTyping, PresencePaused)
+	}
+
+	jid := toJID(phone)
+
+	if err := m.client.SendChatPresence(ctx, jid, presence, types.ChatPresenceMediaText); err != nil {
+		return fmt.Errorf("whatsapp: send presence: %w", err)
+	}
+	return nil
 }
 
 // IsConnected returns whether the client is currently connected.
@@ -241,6 +267,13 @@ func (m *MeowClient) handleEvent(rawEvt interface{}) {
 		})
 		m.logger.Info("whatsapp reconnected")
 	case *events.Message:
+		if m.ignoreGroups && evt.Info.IsGroup {
+			return
+		}
+		if m.ignoreStatus && evt.Info.Chat == types.StatusBroadcastJID {
+			return
+		}
+
 		// Only capture incoming text messages for now or all messages.
 		var text string
 		if evt.Message.GetConversation() != "" {

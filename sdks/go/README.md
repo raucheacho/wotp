@@ -25,33 +25,49 @@ import (
 )
 
 func main() {
+    ctx := context.Background()
     client := wotp.NewClient("http://localhost:54321", wotp.WithApiKey("wotp_anon_xxx"))
 
     // Send an OTP
-    resp, err := client.SendOTP(context.Background(), "+212600000000")
+    resp, err := client.SendOTP(ctx, "+212600000000")
     if err != nil {
         log.Fatal(err)
     }
     fmt.Printf("Token: %s (expires at %s)\n", resp.Token, resp.ExpiresAt)
 
     // Verify the code entered by the user
-    result, err := client.VerifyOTP(context.Background(), resp.Token, "483920")
-
-	// Send a text message
-	textRes, err := client.SendText(ctx, "+212600000000", "Hello world")
-
-	// Send a media message
-	mediaRes, err := client.SendMedia(ctx, "+212600000000", wotp.SendMediaRequest{
-		URL: "https://example.com/image.png",
-	})
-
-	// List chats
-	chats, err := client.GetChats(ctx)
-
+    result, err := client.VerifyOTP(ctx, resp.Token, "483920")
     if err != nil {
         log.Fatal(err)
     }
     fmt.Printf("Verified: %v\n", result.Verified)
+
+    // Send a text message
+    textRes, err := client.SendText(ctx, "+212600000000", "Hello world")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Message ID: %s\n", textRes.MessageID)
+
+    // Send a media message
+    _, err = client.SendMedia(ctx, "+212600000000", wotp.SendMediaRequest{
+        URL: "https://example.com/image.png",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Show a typing indicator
+    if err := client.SetPresence(ctx, "+212600000000", wotp.PresenceTyping); err != nil {
+        log.Fatal(err)
+    }
+
+    // List chats
+    chats, err := client.GetChats(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Chats: %d\n", len(chats))
 }
 ```
 
@@ -99,12 +115,24 @@ result, err := client.VerifyOTP(ctx, resp.Token, "483920")
 
 ### `client.Health(ctx)`
 
-Check the health of the Wotp instance.
+Instance-wide liveness check (no notion of a single connected phone number — an instance can host many projects, each with their own numbers).
 
 ```go
 health, err := client.Health(ctx)
-// health.Status, health.Phone, health.UptimeSeconds
+// health.Status, health.UptimeSeconds
 ```
+
+### `client.SendText(ctx, phone, text)` · `client.SendMedia(ctx, phone, media)`
+
+Send a text or media message. Both return `*MessageResponse` with `.MessageID` — a failed send comes back as an `error`, not a `Success` field.
+
+### `client.GetChats(ctx)`
+
+Lists the WhatsApp contacts visible to the project's connected numbers as `[]Chat`, each with `.JID` and `.Name`.
+
+### `client.SetPresence(ctx, phone, state)`
+
+Sets the typing indicator for a chat without sending a message. `state` is `wotp.PresenceTyping` or `wotp.PresencePaused`.
 
 ## Error Handling
 

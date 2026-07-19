@@ -1,5 +1,5 @@
 /**
- * @wotp/client — TypeScript SDK for Wotp
+ * wotp-client — TypeScript SDK for Wotp
  * Type definitions for all request/response shapes.
  */
 
@@ -24,6 +24,12 @@ export interface SendOTPResponse {
   token: string;
   /** ISO 8601 timestamp when this OTP expires. */
   expiresAt: string;
+  /**
+   * Set to `"message_send_failed"` when the OTP was created but the
+   * WhatsApp send itself failed (e.g. no number is connected yet). The
+   * token is still valid — only delivery failed.
+   */
+  warning?: string;
 }
 
 /** Successful response from `POST /otp/verify`. */
@@ -36,12 +42,15 @@ export interface VerifyOTPResponse {
   attemptsRemaining?: number;
 }
 
-/** Response from `GET /health`. */
+/**
+ * Response from `GET /v1/health`. This is an instance-wide liveness check —
+ * it has no notion of a single connected phone number, since one instance
+ * can host many projects each with their own numbers. See `getChats()` or
+ * the dashboard for per-project connection state.
+ */
 export interface HealthResponse {
-  /** WhatsApp connection status. */
+  /** `"ok"` when the instance is up. */
   status: string;
-  /** Connected phone number. */
-  phone: string;
   /** Uptime in seconds. */
   uptimeSeconds: number;
 }
@@ -88,14 +97,20 @@ export interface SendMediaRequest {
   caption?: string;
 }
 
+/**
+ * Response from `POST /v1/messages/send`. There is no `success` field — a
+ * failed send comes back as a non-2xx status and is thrown as a `WotpError`
+ * instead.
+ */
 export interface MessageResponse {
-  success: boolean;
   messageId?: string;
 }
 
+/** A WhatsApp contact visible to one of the project's connected numbers. */
 export interface Chat {
-  id: string;
+  jid: string;
   name?: string;
-  unreadCount?: number;
-  timestamp?: number;
 }
+
+/** State accepted by `setPresence()`. */
+export type PresenceState = 'typing' | 'paused';

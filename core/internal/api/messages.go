@@ -26,20 +26,12 @@ func (s *Server) handleMessagesSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Basic Rate Limiting Check
-	s.msgMu.Lock()
-	now := time.Now()
-	if now.Sub(s.msgWindow) >= time.Minute {
-		s.msgWindow = now
-		s.msgCount = 0
-	}
-	s.msgCount++
-	if s.config.Messaging.MaxMessagesPerMinute > 0 && s.msgCount > s.config.Messaging.MaxMessagesPerMinute {
-		s.msgMu.Unlock()
+	rt := runtimeFromContext(r.Context())
+
+	if !rt.AllowSend() {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
 		return
 	}
-	s.msgMu.Unlock()
 
 	var msgID string
 	var errMsg string
@@ -51,7 +43,7 @@ func (s *Server) handleMessagesSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Type == "media" {
-		result, err := s.waClient.SendMedia(ctx, req.Phone, req.URL, req.Base64, req.Caption)
+		result, err := rt.WA.SendMedia(ctx, req.Phone, req.URL, req.Base64, req.Caption)
 		if err != nil {
 			s.logger.Error("failed to send media", "error", err, "phone", req.Phone)
 			status = "failed"
@@ -61,7 +53,7 @@ func (s *Server) handleMessagesSend(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// default to text
-		result, err := s.waClient.SendMessage(ctx, req.Phone, req.Text)
+		result, err := rt.WA.SendMessage(ctx, req.Phone, req.Text)
 		if err != nil {
 			s.logger.Error("failed to send message", "error", err, "phone", req.Phone)
 			status = "failed"
@@ -95,13 +87,14 @@ func (s *Server) handleMessagesSend(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:   time.Now().UTC(),
 	}
 
-	if err := s.engine.Store().SaveGenericMessage(ctx, dbMsg); err != nil {
+	if err := rt.Store.SaveGenericMessage(ctx, dbMsg); err != nil {
 		s.logger.Error("failed to save generic message", "error", err)
 	}
 
 	if status == "sent" {
 		s.wsHub.Broadcast(ws.Event{
 			Type:      "generic.message.sent",
+			ProjectID: rt.Project.ID,
 			MessageID: msgID,
 			Phone:     req.Phone,
 			MsgType:   req.Type,
@@ -119,7 +112,8 @@ func (s *Server) handleMessagesSend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetMessages(w http.ResponseWriter, r *http.Request) {
-	msgs, err := s.engine.Store().GetGenericMessages(r.Context(), 100)
+	rt := runtimeFromContext(r.Context())
+	msgs, err := rt.Store.GetGenericMessages(r.Context(), 100)
 	if err != nil {
 		s.logger.Error("failed to get generic messages", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to get messages"})
@@ -131,8 +125,31 @@ func (s *Server) handleGetMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, msgs)
 }
 
+type PresenceRequest struct {
+	Phone string `json:"phone"`
+	State string `json:"state"` // "typing" or "paused"
+}
+
+func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request) {
+	var req PresenceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Phone == "" || req.State == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone and state are required"})
+		return
+	}
+
+	rt := runtimeFromContext(r.Context())
+	if err := rt.WA.SetPresence(r.Context(), req.Phone, req.State); err != nil {
+		s.logger.Error("failed to set presence", "error", err, "phone", req.Phone, "state", req.State)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (s *Server) handleChats(w http.ResponseWriter, r *http.Request) {
-	chats, err := s.waClient.GetChats(r.Context())
+	rt := runtimeFromContext(r.Context())
+	chats, err := rt.WA.GetChats(r.Context())
 	if err != nil {
 		s.logger.Error("failed to get chats", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to get chats"})

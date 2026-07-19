@@ -12,11 +12,20 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/wotp/core/internal/config"
 	"github.com/wotp/core/internal/store"
 	"github.com/wotp/core/internal/whatsapp"
 	"github.com/wotp/core/internal/ws"
 )
+
+// Config holds the per-project webhook settings (endpoint, event filter,
+// signing secret). Deliberately not core/internal/config.Config — that
+// package only holds instance-wide settings now, while webhooks are
+// per-project (see core/internal/project.Settings.Webhooks).
+type Config struct {
+	Endpoint string
+	Events   []string
+	Secret   string
+}
 
 type WebhookPayload struct {
 	Event     string `json:"event"`
@@ -25,13 +34,13 @@ type WebhookPayload struct {
 }
 
 type Service struct {
-	cfg        config.WebhooksConfig
+	cfg        Config
 	httpClient *http.Client
-	store      store.Store
+	store      store.ProjectStore
 	wsHub      *ws.Hub
 }
 
-func NewService(cfg config.WebhooksConfig, st store.Store, wsHub *ws.Hub) *Service {
+func NewService(cfg Config, st store.ProjectStore, wsHub *ws.Hub) *Service {
 	return &Service{
 		cfg:   cfg,
 		store: st,

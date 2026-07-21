@@ -1,0 +1,18 @@
+services:
+  wotp:
+    image: ghcr.io/raucheacho/wotp:${WOTP_VERSION:-1}
+    restart: unless-stopped
+    ports:
+      - "${WOTP_PORT:-54321}:${WOTP_PORT:-54321}"
+    environment:
+      WOTP_PORT: ${WOTP_PORT:-54321}
+      WOTP_PROJECT_NAME: ${WOTP_PROJECT_NAME:-wotp}
+      WOTP_PROJECT_REF: ${WOTP_PROJECT_REF:-wotp-default}
+      WOTP_ENABLE_DASHBOARD: ${WOTP_ENABLE_DASHBOARD:-true}
+      WOTP_ANON_KEY: ${WOTP_ANON_KEY:-}
+      WOTP_SERVICE_KEY: ${WOTP_SERVICE_KEY:-}
+    volumes:
+      - wotp_data:/data
+
+volumes:
+  wotp_data:

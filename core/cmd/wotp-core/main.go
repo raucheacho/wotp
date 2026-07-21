@@ -39,7 +39,14 @@ func main() {
 		"data_dir", *dataDir,
 	)
 
-	// Load config (instance-wide settings only — see core/internal/config)
+	// Load config (instance-wide settings only — see core/internal/config).
+	// *configPath is optional: if it's not there (e.g. deploying straight
+	// from the image on Dokploy/Coolify without the wotp CLI), Load falls
+	// back to defaults + WOTP_* env var overrides instead of failing to
+	// start.
+	if _, err := os.Stat(*configPath); os.IsNotExist(err) {
+		logger.Info("no config.toml found, using defaults + WOTP_* env overrides", "path", *configPath)
+	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		logger.Error("failed to load config", "error", err)

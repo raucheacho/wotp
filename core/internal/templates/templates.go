@@ -3,12 +3,23 @@
 package templates
 
 import (
+	"embed"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 )
+
+// defaultTemplatesFS embeds a generic en/fr/darija template set, used when
+// no templates.toml is mounted at the configured path — same self-host
+// philosophy as config.Load falling back to Defaults(): the binary works
+// out of the box on a platform like Dokploy/Coolify that can't easily
+// inject arbitrary files, no CLI-generated file required.
+//
+//go:embed default_templates.toml
+var defaultTemplatesFS embed.FS
 
 // LocaleTemplates maps locale codes to their template definitions.
 type LocaleTemplates map[string]Template
@@ -24,9 +35,15 @@ type Store struct {
 	defaultLocale string
 }
 
-// NewStore creates a template store from a templates.toml file.
+// NewStore creates a template store from a templates.toml file at path. If
+// no file exists there, falls back to the built-in en/fr/darija templates
+// rather than failing to start — path is still consulted first so an
+// operator who does mount a custom templates.toml keeps full control.
 func NewStore(path, defaultLocale string) (*Store, error) {
 	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		data, err = defaultTemplatesFS.ReadFile("default_templates.toml")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("templates: read %s: %w", path, err)
 	}

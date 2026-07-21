@@ -386,6 +386,25 @@ otp_message = "Votre code de vérification : {{code}}. Valable {{expiry}} minute
 otp_message = "Click here to securely login: https://your-app.com/verify?code={{code}}"
 ```
 
+### Deploying without the CLI (Docker Compose, Dokploy, Coolify, …)
+
+`wotp start` is the zero-friction path for local dev — it generates `config.toml`/`templates.toml` and mounts them in. But `wotp-core` doesn't actually require either file to exist: if they're missing, it boots on built-in defaults (the same en/fr/darija templates shown above) and a handful of `WOTP_*` environment variables layer on top — same self-hosting model as Supabase's docker-compose (`.env`-driven, no bespoke CLI needed at deploy time). This is what lets you point Dokploy/Coolify/a plain VPS straight at the published image:
+
+```bash
+cp .env.example .env   # edit WOTP_PORT / WOTP_PROJECT_NAME / etc.
+docker compose up -d
+```
+
+| Variable | Overrides | Default |
+|----------|-----------|---------|
+| `WOTP_PORT` | `api.port` | `54321` |
+| `WOTP_PROJECT_NAME` | `project.name` | `wotp` |
+| `WOTP_PROJECT_REF` | `project.ref` | `wotp-default` |
+| `WOTP_ENABLE_DASHBOARD` | `api.enable_dashboard` | `true` |
+| `WOTP_ANON_KEY` / `WOTP_SERVICE_KEY` | pins your own API keys instead of letting wotp generate them | generated on first boot (printed once to the logs) |
+
+`/data` still needs to be a persistent volume — it holds `control.db`/`data.db` (SQLite), the whatsmeow session (so you don't have to rescan the QR on every redeploy), and downloaded inbound media. On Dokploy/Coolify, attach a persistent volume mount to `/data` when creating the app; the [`docker-compose.yml`](docker-compose.yml) at the repo root already declares one for local `docker compose` use. If you do want the customization `config.toml`/`templates.toml` give you (custom locales, a `storage` block, etc.), just mount your own files at `/app/config.toml` / `/app/templates.toml` — they're read first, and `WOTP_*` env vars only override on top.
+
 ### Meta Cloud API backend (optional, alongside whatsmeow)
 
 By default an instance sends everything through whatsmeow (unofficial, instant to set up — scan a QR and go). For OTP traffic specifically, whatsmeow numbers can get banned by WhatsApp: automated, one-shot messages to strangers are exactly the pattern its abuse detection looks for. If that matters for your deployment, an instance can instead send OTPs through the official Meta WhatsApp Cloud API, which has no such ban risk — Meta hosts the connection, there's no session/device to protect.
@@ -467,6 +486,8 @@ wotp/
 ├── .github/workflows/             # CI/CD: build, GoReleaser, SDK publishing
 ├── .goreleaser.yml                 # CLI binary releases (GitHub, Homebrew, Scoop)
 ├── Makefile                        # local multi-binary build into bin/
+├── docker-compose.yml               # deploy the published image directly — no CLI (see Configuration)
+├── .env.example                     # WOTP_* variables for docker-compose.yml
 ├── LICENSE
 └── README.md
 ```

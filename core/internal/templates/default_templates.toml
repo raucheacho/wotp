@@ -1,0 +1,8 @@
+[en]
+otp_message = "Your verification code: {{code}}. Valid for {{expiry}} minutes."
+
+[fr]
+otp_message = "Votre code de vérification : {{code}}. Valable {{expiry}} minutes."
+
+[darija]
+otp_message = "Code dyalek: {{code}}. Salih {{expiry}} d9ay9."

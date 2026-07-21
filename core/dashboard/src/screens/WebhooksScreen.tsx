@@ -20,12 +20,12 @@ export default function WebhooksScreen() {
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 bg-muted/50 rounded-lg border">
           <div className="mb-4 sm:mb-0">
             <div className="text-sm text-muted-foreground">
-              Les webhooks sont configurés par projet, pas dans <code className="text-primary font-mono bg-primary/10 px-1 rounded">config.toml</code> (settings instance-wide uniquement).
+              Les webhooks se configurent via l'API, pas dans <code className="text-primary font-mono bg-primary/10 px-1 rounded">config.toml</code> (instance-wide uniquement).
               Pas encore d'écran dédié ici — utilisez l'API en attendant :
             </div>
             <pre className="mt-3 p-3 bg-background rounded border font-mono text-xs text-muted-foreground overflow-x-auto">
-{`curl -X PATCH http://localhost:54321/v1/projects/<id>/settings \\
-  -H "apikey: <root key>" \\
+{`curl -X PATCH http://localhost:54321/v1/settings \\
+  -H "apikey: <service key>" \\
   -d '{"webhooks": {"endpoint": "https://votre-domaine.com/webhook",
                     "secret": "votre_cle_secrete",
                     "events": ["message.received", "message.delivered"]}}'`}

@@ -8,8 +8,9 @@ specific failure modes without parsing HTTP status codes.
 class WotpError(Exception):
     """Base exception for all Wotp SDK errors."""
 
-    def __init__(self, message: str = "Wotp SDK error") -> None:
+    def __init__(self, message: str = "Wotp SDK error", status_code: int | None = None) -> None:
         self.message = message
+        self.status_code = status_code
         super().__init__(self.message)
 
 

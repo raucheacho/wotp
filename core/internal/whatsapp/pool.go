@@ -253,6 +253,16 @@ func fetchMediaData(ctx context.Context, url, base64Data string) ([]byte, error)
 			return nil, fmt.Errorf("whatsapp: download media: %w", err)
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			// Without this check, an error page (often HTML — a 403 from a
+			// host that gates on User-Agent, an expired link, ...) gets
+			// silently uploaded and "sent" as if it were the real file:
+			// WhatsApp accepts the upload (it's just bytes) and the send
+			// call returns a message id, but the recipient never sees a
+			// working image/video/audio/document — a send that looks
+			// successful end to end while actually delivering garbage.
+			return nil, fmt.Errorf("whatsapp: fetch media url: status %d", resp.StatusCode)
+		}
 		data, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return nil, fmt.Errorf("whatsapp: read media: %w", err)
@@ -260,6 +270,36 @@ func fetchMediaData(ctx context.Context, url, base64Data string) ([]byte, error)
 		return data, nil
 	}
 	return nil, fmt.Errorf("whatsapp: neither url nor base64Data provided")
+}
+
+// SendLocation sends a location pin through this project's number.
+// opts.Name/Address are optional — a bare pin with no label is valid.
+func (p *Pool) SendLocation(ctx context.Context, phone string, opts LocationSendOptions) (*SendResult, error) {
+	d, err := p.current()
+	if err != nil {
+		return nil, err
+	}
+	jid := toJID(phone)
+
+	loc := &waE2E.LocationMessage{
+		DegreesLatitude:  proto.Float64(opts.Latitude),
+		DegreesLongitude: proto.Float64(opts.Longitude),
+	}
+	if opts.Name != "" {
+		loc.Name = proto.String(opts.Name)
+	}
+	if opts.Address != "" {
+		loc.Address = proto.String(opts.Address)
+	}
+
+	resp, err := d.client.SendMessage(ctx, jid, &waE2E.Message{LocationMessage: loc})
+	if err != nil {
+		p.emitEvent(d, Event{Type: EventMessageFailed, Phone: phone, Error: err.Error(), At: time.Now().UTC()})
+		return nil, fmt.Errorf("whatsapp: send location: %w", err)
+	}
+
+	p.emitEvent(d, Event{Type: EventMessageSent, Phone: phone, MessageID: resp.ID, At: time.Now().UTC()})
+	return &SendResult{MessageID: resp.ID}, nil
 }
 
 // SendMessage sends a text message through this project's number.
@@ -288,13 +328,15 @@ func (p *Pool) SendMessage(ctx context.Context, phone, message string) (*SendRes
 	return &SendResult{MessageID: resp.ID}, nil
 }
 
-// SendMedia sends a media message through this project's number.
-func (p *Pool) SendMedia(ctx context.Context, phone, url, base64Data, caption string) (*SendResult, error) {
+// SendMedia sends a media message through this project's number. Kind
+// selects the whatsmeow upload type and waE2E.Message field — see
+// mediaMessageForKind.
+func (p *Pool) SendMedia(ctx context.Context, phone string, opts MediaSendOptions) (*SendResult, error) {
 	d, err := p.current()
 	if err != nil {
 		return nil, err
 	}
-	data, err := fetchMediaData(ctx, url, base64Data)
+	data, err := fetchMediaData(ctx, opts.URL, opts.Base64Data)
 	if err != nil {
 		return nil, err
 	}
@@ -307,23 +349,12 @@ func (p *Pool) SendMedia(ctx context.Context, phone, url, base64Data, caption st
 		_ = d.client.SendChatPresence(ctx, jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
 	}
 
-	uploadResp, err := d.client.Upload(ctx, data, whatsmeow.MediaImage)
+	mediaType, buildMessage := mediaKindHandlers(opts.Kind)
+	uploadResp, err := d.client.Upload(ctx, data, mediaType)
 	if err != nil {
 		return nil, fmt.Errorf("whatsapp: upload media: %w", err)
 	}
-
-	msg := &waE2E.Message{
-		ImageMessage: &waE2E.ImageMessage{
-			Caption:       proto.String(caption),
-			Mimetype:      proto.String(contentType),
-			URL:           proto.String(uploadResp.URL),
-			DirectPath:    proto.String(uploadResp.DirectPath),
-			MediaKey:      uploadResp.MediaKey,
-			FileEncSHA256: uploadResp.FileEncSHA256,
-			FileSHA256:    uploadResp.FileSHA256,
-			FileLength:    proto.Uint64(uint64(len(data))),
-		},
-	}
+	msg := buildMessage(uploadResp, contentType, uint64(len(data)), opts.Caption, opts.Filename)
 
 	sendResp, err := d.client.SendMessage(ctx, jid, msg)
 	if err != nil {
@@ -333,6 +364,94 @@ func (p *Pool) SendMedia(ctx context.Context, phone, url, base64Data, caption st
 
 	p.emitEvent(d, Event{Type: EventMessageSent, Phone: phone, MessageID: sendResp.ID, At: time.Now().UTC()})
 	return &SendResult{MessageID: sendResp.ID}, nil
+}
+
+// mediaKindHandlers returns the whatsmeow upload MediaType and a builder
+// for the matching waE2E.Message field for kind, defaulting to image for
+// an empty/unrecognized kind (mirrors the "media" legacy alias in
+// api.handleMessagesSend). All four waE2E media message types carry the
+// same upload-response fields (URL, Mimetype, FileSHA256, FileLength,
+// extractInboundMedia detects whether msg carries an image/video/audio/
+// document attachment and, if so, downloads+decrypts it via client.
+// whatsmeow keeps the decryption keys (MediaKey/FileEncSHA256/...) only in
+// this in-memory message — there's no way to re-fetch them once handleEvent
+// returns — so the download has to happen synchronously right here, not
+// lazily when a dev later asks for the file (see GET /v1/media/{id}).
+// Returns ("", "", "", nil) for a message with no media attachment. On a
+// download failure, still returns the caption/kind/mimetype with a nil
+// data — fail open, same as the rest of this event path: the message still
+// gets recorded, just without retrievable media.
+func extractInboundMedia(ctx context.Context, client *whatsmeow.Client, msg *waE2E.Message) (caption, kind, mimeType string, data []byte) {
+	var downloadable whatsmeow.DownloadableMessage
+	switch {
+	case msg.GetImageMessage() != nil:
+		m := msg.GetImageMessage()
+		caption, kind, mimeType, downloadable = m.GetCaption(), string(MediaKindImage), m.GetMimetype(), m
+	case msg.GetVideoMessage() != nil:
+		m := msg.GetVideoMessage()
+		caption, kind, mimeType, downloadable = m.GetCaption(), string(MediaKindVideo), m.GetMimetype(), m
+	case msg.GetAudioMessage() != nil:
+		// No caption field on audio — WhatsApp's protocol carries none for
+		// voice notes (see mediaKindHandlers' doc comment, same fact on
+		// the send side).
+		m := msg.GetAudioMessage()
+		kind, mimeType, downloadable = string(MediaKindAudio), m.GetMimetype(), m
+	case msg.GetDocumentMessage() != nil:
+		m := msg.GetDocumentMessage()
+		caption, kind, mimeType, downloadable = m.GetCaption(), string(MediaKindDocument), m.GetMimetype(), m
+	default:
+		return "", "", "", nil
+	}
+
+	bytes, err := client.Download(ctx, downloadable)
+	if err != nil {
+		return caption, kind, mimeType, nil
+	}
+	return caption, kind, mimeType, bytes
+}
+
+// MediaKey, FileEncSHA256, DirectPath) — only Caption/Filename
+// availability differs: audio has no Caption field at all (WhatsApp's
+// protocol carries none for voice notes), and only document has FileName.
+func mediaKindHandlers(kind MediaKind) (whatsmeow.MediaType, func(resp whatsmeow.UploadResponse, mimetype string, length uint64, caption, filename string) *waE2E.Message) {
+	switch kind {
+	case MediaKindVideo:
+		return whatsmeow.MediaVideo, func(r whatsmeow.UploadResponse, mimetype string, length uint64, caption, _ string) *waE2E.Message {
+			return &waE2E.Message{VideoMessage: &waE2E.VideoMessage{
+				Caption: proto.String(caption), Mimetype: proto.String(mimetype),
+				URL: proto.String(r.URL), DirectPath: proto.String(r.DirectPath),
+				MediaKey: r.MediaKey, FileEncSHA256: r.FileEncSHA256, FileSHA256: r.FileSHA256,
+				FileLength: proto.Uint64(length),
+			}}
+		}
+	case MediaKindAudio:
+		return whatsmeow.MediaAudio, func(r whatsmeow.UploadResponse, mimetype string, length uint64, _, _ string) *waE2E.Message {
+			return &waE2E.Message{AudioMessage: &waE2E.AudioMessage{
+				Mimetype: proto.String(mimetype),
+				URL:      proto.String(r.URL), DirectPath: proto.String(r.DirectPath),
+				MediaKey: r.MediaKey, FileEncSHA256: r.FileEncSHA256, FileSHA256: r.FileSHA256,
+				FileLength: proto.Uint64(length),
+			}}
+		}
+	case MediaKindDocument:
+		return whatsmeow.MediaDocument, func(r whatsmeow.UploadResponse, mimetype string, length uint64, caption, filename string) *waE2E.Message {
+			return &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{
+				Caption: proto.String(caption), FileName: proto.String(filename), Mimetype: proto.String(mimetype),
+				URL: proto.String(r.URL), DirectPath: proto.String(r.DirectPath),
+				MediaKey: r.MediaKey, FileEncSHA256: r.FileEncSHA256, FileSHA256: r.FileSHA256,
+				FileLength: proto.Uint64(length),
+			}}
+		}
+	default: // MediaKindImage and unrecognized/empty
+		return whatsmeow.MediaImage, func(r whatsmeow.UploadResponse, mimetype string, length uint64, caption, _ string) *waE2E.Message {
+			return &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+				Caption: proto.String(caption), Mimetype: proto.String(mimetype),
+				URL: proto.String(r.URL), DirectPath: proto.String(r.DirectPath),
+				MediaKey: r.MediaKey, FileEncSHA256: r.FileEncSHA256, FileSHA256: r.FileSHA256,
+				FileLength: proto.Uint64(length),
+			}}
+		}
+	}
 }
 
 // SetPresence sets the chat presence (typing indicator) for the given phone
@@ -468,29 +587,71 @@ func (p *Pool) handleEvent(d *device, rawEvt any) {
 		})
 		p.logger.Info("whatsapp device reconnected", "phone", d.phone)
 	case *events.Message:
+		// IsFromMe means this event is an echo of a message this WhatsApp
+		// account sent — either via this API or from another linked
+		// device/the phone itself (WhatsApp multi-device syncs every send
+		// to every linked device, including this one). It is never a
+		// genuine reply from the other party. Without this check, a human
+		// operator replying manually from their own phone — or the bot's
+		// own sent messages syncing back — would be misread as inbound
+		// customer messages, at worst causing the bot to reply to its own
+		// messages in a loop.
+		if evt.Info.IsFromMe {
+			return
+		}
 		if p.ignoreGroups && evt.Info.IsGroup {
 			return
 		}
 		if p.ignoreStatus && evt.Info.Chat == types.StatusBroadcastJID {
 			return
 		}
+		// Protocol messages (revokes, history-sync notifications, app-state
+		// key shares, ephemeral-timer changes, ...) aren't real user
+		// content — WhatsApp sends a burst of these right after a device
+		// links, wrapped in the same *events.Message type. Emitting them as
+		// EventMessageReceived would flood webhooks/conversations with
+		// empty-text noise.
+		if evt.Message.GetProtocolMessage() != nil {
+			return
+		}
 
-		var text string
+		var text, mediaKind, mediaMimeType string
+		var mediaBytes []byte
 		if evt.Message.GetConversation() != "" {
 			text = evt.Message.GetConversation()
 		} else if evt.Message.GetExtendedTextMessage() != nil {
 			text = evt.Message.GetExtendedTextMessage().GetText()
+		} else if loc := evt.Message.GetLocationMessage(); loc != nil {
+			text = FormatLocationText(loc.GetName(), loc.GetDegreesLatitude(), loc.GetDegreesLongitude())
+		} else {
+			text, mediaKind, mediaMimeType, mediaBytes = extractInboundMedia(context.Background(), d.client, evt.Message)
+		}
+
+		// WhatsApp increasingly addresses senders by LID (a privacy-preserving
+		// numeric ID, JID server "lid") instead of their real phone number.
+		// When that happens, Sender.User isn't a real MSISDN — SenderAlt
+		// carries the actual phone-number JID, so prefer it whenever present.
+		senderJID := evt.Info.Sender
+		if senderJID.Server == types.HiddenUserServer && !evt.Info.SenderAlt.IsEmpty() {
+			senderJID = evt.Info.SenderAlt
 		}
 
 		data := map[string]interface{}{
 			"text":     text,
 			"pushName": evt.Info.PushName,
-			"sender":   evt.Info.Sender.String(),
+			"sender":   senderJID.String(),
+		}
+		if mediaKind != "" {
+			data["mediaKind"] = mediaKind
+			data["mediaMimeType"] = mediaMimeType
+			if mediaBytes != nil {
+				data["mediaBytes"] = mediaBytes
+			}
 		}
 
 		p.emitEvent(d, Event{
 			Type:      EventMessageReceived,
-			Phone:     evt.Info.Sender.User,
+			Phone:     senderJID.User,
 			MessageID: evt.Info.ID,
 			At:        evt.Info.Timestamp,
 			Data:      data,

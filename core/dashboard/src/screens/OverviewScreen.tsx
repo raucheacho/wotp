@@ -5,21 +5,17 @@ import { Zap, CheckCircle, Activity, Cloud, Smartphone, AlertTriangle } from 'lu
 import type { WaNumber, CloudStatus } from '../types';
 
 // Overview is the default landing screen — it should answer "is this
-// project healthy right now," not greet a returning operator with a
+// instance healthy right now," not greet a returning operator with a
 // marketing hero and a copy-pasteable cURL example. That belongs in the
 // README, not the screen someone checks every day.
 export default function OverviewScreen() {
   const stats = useStore((state) => state.stats);
-  const selectedProjectId = useStore((state) => state.selectedProjectId);
   const [number, setNumber] = useState<WaNumber | null>(null);
   const [cloud, setCloud] = useState<CloudStatus | null>(null);
 
   const fetchStatus = useCallback(async () => {
-    if (!selectedProjectId) return;
     try {
-      const res = await fetch(
-        `/dashboard/api/numbers?project_id=${encodeURIComponent(selectedProjectId)}`,
-      );
+      const res = await fetch("/dashboard/api/numbers");
       if (res.ok) {
         const numbers: WaNumber[] = await res.json();
         setNumber(numbers[0] ?? null);
@@ -28,14 +24,12 @@ export default function OverviewScreen() {
       // next poll will retry
     }
     try {
-      const res = await fetch(
-        `/dashboard/api/cloud-status?project_id=${encodeURIComponent(selectedProjectId)}`,
-      );
+      const res = await fetch("/dashboard/api/cloud-status");
       if (res.ok) setCloud(await res.json());
     } catch {
       // next poll will retry
     }
-  }, [selectedProjectId]);
+  }, []);
 
   useEffect(() => {
     fetchStatus();
@@ -52,7 +46,7 @@ export default function OverviewScreen() {
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       <div className="flex flex-col gap-2 mb-2">
         <h2 className="text-3xl font-bold tracking-tight">Overview</h2>
-        <p className="text-muted-foreground text-lg">This project's health at a glance.</p>
+        <p className="text-muted-foreground text-lg">This instance's health at a glance.</p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -95,7 +89,7 @@ export default function OverviewScreen() {
               <h3 className="text-lg font-semibold">Cloud API (OTP)</h3>
               <p className="text-muted-foreground text-sm">
                 {!cloudEnabled
-                  ? 'Not enabled for this project'
+                  ? 'Not enabled'
                   : cloudOk
                     ? `Connected — ${cloud?.display_phone || cloud?.phone_number_id}`
                     : 'Enabled, but credentials could not be verified'}
@@ -110,7 +104,7 @@ export default function OverviewScreen() {
           <div className="flex items-center gap-3 text-destructive">
             <AlertTriangle className="w-5 h-5 shrink-0" />
             <p className="font-medium text-sm">
-              This project can't send OTPs right now — pair a WhatsApp number or enable the Cloud
+              This instance can't send OTPs right now — pair a WhatsApp number or enable the Cloud
               API backend in Settings.
             </p>
           </div>

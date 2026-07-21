@@ -31,11 +31,22 @@ text_res = client.send_text("+212600000000", "Hello world")
 # Send a media message
 media_res = client.send_media("+212600000000", url="https://example.com/image.png")
 
+# Send a location
+client.send_location("+212600000000", 33.5731, -7.5898, name="Casablanca")
+
 # Show a typing indicator
 client.set_presence("+212600000000", "typing")
 
 # List chats
 chats = client.get_chats()
+
+# Read a conversation thread and take it over
+conversations = client.list_conversations()
+messages = client.get_conversation_messages(conversations[0].id)
+client.takeover_conversation(conversations[0].id, actor="agent-1")
+
+# Download media a contact sent in (image/video/audio/document)
+media = client.get_media("wamid.XXX")
 
 print(f"Verified: {result.verified}")
 ```
@@ -82,21 +93,38 @@ Send a text message to the given phone number.
 
 - **Returns:** `MessageResponse` with `.message_id`
 
-### `client.send_media(phone, url=None, base64=None, caption=None)`
+### `client.send_media(phone, url=None, base64=None, caption=None, kind="image", filename=None)`
 
-Send a media message. Provide either `url` or `base64`.
+Send a media message. Provide either `url` or `base64`. `kind` is `"image"`, `"video"`, `"audio"`, or `"document"`; `filename` only matters for `"document"`.
+
+- **Returns:** `MessageResponse` with `.message_id`
+
+### `client.send_location(phone, latitude, longitude, name=None, address=None)`
+
+Send a WhatsApp location message. `name`/`address` are optional.
 
 - **Returns:** `MessageResponse` with `.message_id`
 
 ### `client.get_chats()`
 
-List the WhatsApp contacts visible to the project's connected numbers.
+List the WhatsApp contacts visible to the connected number.
 
 - **Returns:** `list[Chat]` — each `Chat` has `.jid` and `.name`
 
 ### `client.set_presence(phone, state)`
 
 Set the typing indicator for a chat without sending a message. `state` is `"typing"` or `"paused"`.
+
+### Conversations & takeover
+
+`client.list_conversations()`, `client.get_conversation(id)`, `client.get_conversation_messages(id)` — read a contact's conversation thread (inbound replies, outbound sends, and OTP sends merged chronologically). `client.takeover_conversation(id, actor=None, reason=None)` / `client.resume_conversation(id, actor=None, reason=None)` flip `.state` between `"bot"` and `"human"`.
+
+### `client.get_media(message_id)`
+
+Downloads the raw bytes of an inbound image/video/audio/document message wotp captured when it arrived.
+
+- **Returns:** `MediaFile` with `.data` (`bytes`) and `.content_type`
+- **Raises:** `WotpError` with `.status_code` 404 if the message wasn't media, or if the download failed at receive time
 
 ## Error Handling
 

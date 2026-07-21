@@ -1,8 +1,7 @@
 // WebSocket event types from the backend
 export interface WsEvent {
   type: 'message.sent' | 'message.delivered' | 'message.read' | 'message.failed' | 'session.disconnected' | 'session.reconnected' | 'generic.message.sent' | 'webhook.event' | 'otp.verified' | 'number.qr';
-  project_id?: string;
-  /** JID of the number that handled this event — useful once a project has more than one. */
+  /** JID of the number that handled this event. */
   from?: string;
   phone?: string;
   to?: string;
@@ -66,23 +65,16 @@ export interface HealthResponse {
   uptime_seconds?: number;
 }
 
-// A tenant on this wotp instance — see core/internal/store.Project.
-export interface Project {
-  id: string;
-  slug: string;
-  name: string;
-  created_at: string;
-}
-
-// A project's whatsmeow number — see whatsapp.Pool.Numbers(). At most one.
+// The instance's whatsmeow number — see whatsapp.Pool.Numbers(). At most one.
 export interface WaNumber {
   jid: string;
   phone: string;
   connected: boolean;
 }
 
-// A project's Meta Cloud API backend status — see api.CloudStatus. Never
-// includes the access token (write-only, see the settings form).
+// The instance's Meta Cloud API backend status — see api.CloudStatus. Never
+// includes the access token, app secret, or pin (write-only, see the
+// settings form) — waba_id/verify_token aren't secret, so they round-trip.
 export interface CloudStatus {
   enabled: boolean;
   connected: boolean;
@@ -90,6 +82,9 @@ export interface CloudStatus {
   display_phone?: string;
   otp_template_name?: string;
   otp_template_language?: string;
+  waba_id?: string;
+  verify_token?: string;
+  webhook_url?: string;
 }
 
 export interface DashboardStats {

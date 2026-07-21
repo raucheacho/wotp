@@ -9,13 +9,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wotp/core/internal/store"
 	"github.com/wotp/core/internal/ws"
 )
 
-func newTestRegistry(t *testing.T) *Registry {
+func newTestRuntime(t *testing.T) (*Runtime, store.ControlStore, string) {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -34,24 +35,25 @@ func newTestRegistry(t *testing.T) *Registry {
 	}
 
 	hub := ws.NewHub(logger)
-	return NewRegistry(control, dir, templatesPath, hub, logger)
+
+	rt, err := Load(context.Background(), control, hub, logger, LoadOptions{
+		InstanceName:  "Acme Corp",
+		DataDir:       dir,
+		TemplatesPath: templatesPath,
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	t.Cleanup(rt.Close)
+
+	return rt, control, dir
 }
 
-func TestRegistry_CreateAndGet(t *testing.T) {
-	ctx := context.Background()
-	r := newTestRegistry(t)
+func TestLoad_BuildsRuntimeWithDefaults(t *testing.T) {
+	rt, _, _ := newTestRuntime(t)
 
-	p, err := r.Create(ctx, "acme", "Acme Corp")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	rt, err := r.Get(ctx, p.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if rt.Project.Slug != "acme" {
-		t.Fatalf("rt.Project.Slug = %q, want acme", rt.Project.Slug)
+	if rt.Name != "Acme Corp" {
+		t.Fatalf("rt.Name = %q, want Acme Corp", rt.Name)
 	}
 	if rt.Settings.OTP.CodeLength != 6 {
 		t.Fatalf("rt.Settings.OTP.CodeLength = %d, want 6 (default)", rt.Settings.OTP.CodeLength)
@@ -69,167 +71,54 @@ func TestRegistry_CreateAndGet(t *testing.T) {
 	}
 }
 
-func TestRegistry_GetIsCachedAndConcurrencySafe(t *testing.T) {
-	ctx := context.Background()
-	r := newTestRegistry(t)
+func TestLoad_DataFilesLiveDirectlyUnderDataDir(t *testing.T) {
+	rt, _, dir := newTestRuntime(t)
 
-	p, err := r.Create(ctx, "acme", "Acme Corp")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
+	if _, err := rt.Engine.Send(context.Background(), "+15551234567"); err != nil {
+		t.Fatalf("Send OTP: %v", err)
 	}
 
-	rt1, err := r.Get(ctx, p.ID)
-	if err != nil {
-		t.Fatalf("Get 1: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "data.db")); err != nil {
+		t.Fatalf("expected data.db directly under DataDir: %v", err)
 	}
-	rt2, err := r.Get(ctx, p.ID)
-	if err != nil {
-		t.Fatalf("Get 2: %v", err)
-	}
-	if rt1 != rt2 {
-		t.Fatalf("expected Get to return the cached Runtime pointer, got two different instances")
+	if _, err := os.Stat(filepath.Join(dir, "session.db")); err != nil {
+		t.Fatalf("expected session.db directly under DataDir: %v", err)
 	}
 }
 
-func TestRegistry_ProjectsAreDataIsolated(t *testing.T) {
-	ctx := context.Background()
-	r := newTestRegistry(t)
+// TestLoad_SyncNumbersRunsAutomaticallyOnLoad is a regression test: the
+// instance's number must be synced to the control-plane registry as soon as
+// Load builds the Runtime, not left for some later step.
+func TestLoad_SyncNumbersRunsAutomaticallyOnLoad(t *testing.T) {
+	rt, control, _ := newTestRuntime(t)
 
-	projA, err := r.Create(ctx, "proj-a", "A")
-	if err != nil {
-		t.Fatalf("Create A: %v", err)
-	}
-	projB, err := r.Create(ctx, "proj-b", "B")
-	if err != nil {
-		t.Fatalf("Create B: %v", err)
-	}
-
-	rtA, err := r.Get(ctx, projA.ID)
-	if err != nil {
-		t.Fatalf("Get A: %v", err)
-	}
-	rtB, err := r.Get(ctx, projB.ID)
-	if err != nil {
-		t.Fatalf("Get B: %v", err)
-	}
-
-	if _, err := rtA.Engine.Send(ctx, "+15551234567"); err != nil {
-		t.Fatalf("Send OTP in project A: %v", err)
-	}
-
-	otpsA, err := rtA.Store.GetRecentOTPs(ctx, 10)
-	if err != nil {
-		t.Fatalf("GetRecentOTPs A: %v", err)
-	}
-	if len(otpsA) != 1 {
-		t.Fatalf("project A should see 1 OTP, got %d", len(otpsA))
-	}
-
-	otpsB, err := rtB.Store.GetRecentOTPs(ctx, 10)
-	if err != nil {
-		t.Fatalf("GetRecentOTPs B: %v", err)
-	}
-	if len(otpsB) != 0 {
-		t.Fatalf("project B should not see project A's OTPs, got %d", len(otpsB))
-	}
-
-	// The two projects must be backed by separate files on disk.
-	dataA := filepath.Join(r.dataDir, "projects", projA.ID, "data.db")
-	dataB := filepath.Join(r.dataDir, "projects", projB.ID, "data.db")
-	if _, err := os.Stat(dataA); err != nil {
-		t.Fatalf("expected data.db for project A to exist: %v", err)
-	}
-	if _, err := os.Stat(dataB); err != nil {
-		t.Fatalf("expected data.db for project B to exist: %v", err)
-	}
-}
-
-func TestRegistry_CreateRejectsDuplicateSlug(t *testing.T) {
-	ctx := context.Background()
-	r := newTestRegistry(t)
-
-	if _, err := r.Create(ctx, "acme", "Acme Corp"); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if _, err := r.Create(ctx, "acme", "Acme Corp Again"); err == nil {
-		t.Fatal("expected error creating a project with a duplicate slug")
-	}
-}
-
-func TestRegistry_Delete(t *testing.T) {
-	ctx := context.Background()
-	r := newTestRegistry(t)
-
-	p, err := r.Create(ctx, "acme", "Acme Corp")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if _, err := r.Get(ctx, p.ID); err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-
-	if err := r.Delete(ctx, p.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-
-	projectDir := filepath.Join(r.dataDir, "projects", p.ID)
-	if _, err := os.Stat(projectDir); !os.IsNotExist(err) {
-		t.Fatalf("expected project data dir to be removed, stat err = %v", err)
-	}
-
-	gone, err := r.control.GetProjectByID(ctx, p.ID)
-	if err != nil {
-		t.Fatalf("GetProjectByID after delete: %v", err)
-	}
-	if gone != nil {
-		t.Fatalf("expected project row to be deleted, got %+v", gone)
-	}
-}
-
-// TestRegistry_SyncNumbersRunsAutomaticallyOnLoad is a regression test: a
-// project's number must be synced to the control-plane registry as soon as
-// its Runtime is loaded, not left for some later step.
-func TestRegistry_SyncNumbersRunsAutomaticallyOnLoad(t *testing.T) {
-	ctx := context.Background()
-	r := newTestRegistry(t)
-
-	p, err := r.Create(ctx, "acme", "Acme Corp")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	// No numbers paired yet — Get (and the sync it triggers) must not error
+	// No number paired yet — Load (and the sync it triggers) must not error
 	// just because the pool is empty.
-	rt, err := r.Get(ctx, p.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
 	if len(rt.WA.Numbers()) != 0 {
-		t.Fatalf("expected a freshly created project to have no numbers, got %+v", rt.WA.Numbers())
+		t.Fatalf("expected a freshly loaded instance to have no numbers, got %+v", rt.WA.Numbers())
 	}
 
-	numbers, err := r.control.ListNumbersByProject(ctx, p.ID)
+	numbers, err := control.ListNumbers(context.Background())
 	if err != nil {
-		t.Fatalf("ListNumbersByProject: %v", err)
+		t.Fatalf("ListNumbers: %v", err)
 	}
 	if len(numbers) != 0 {
 		t.Fatalf("expected no persisted numbers for a pool with none, got %+v", numbers)
 	}
 }
 
-func TestRegistry_SyncNumbersErrorsWhenProjectNotLoaded(t *testing.T) {
-	r := newTestRegistry(t)
-	if err := r.SyncNumbers(context.Background(), "not-a-real-project-id"); err == nil {
-		t.Fatal("expected an error when syncing a project that was never loaded")
+func TestSyncNumbers_ErrorsAreNotFatalOnEmptyPool(t *testing.T) {
+	rt, control, _ := newTestRuntime(t)
+	if err := SyncNumbers(context.Background(), control, rt.WA); err != nil {
+		t.Fatalf("SyncNumbers on an empty pool should not error: %v", err)
 	}
 }
 
-// enableProjectCloud enables the Cloud API backend on an existing project
-// via its settings blob directly (bypassing the HTTP settings PATCH
-// endpoint, which lives in package api) — the same field
-// (project.Settings.Cloud) that a real PATCH /v1/projects/{id}/settings
-// call would update.
-func enableProjectCloud(t *testing.T, r *Registry, projectID, phoneNumberID, accessToken string) {
+// enableCloudSettings enables the Cloud API backend directly on control's
+// settings blob (bypassing the HTTP settings PATCH endpoint, which lives in
+// package api) — the same field (project.Settings.Cloud) a real
+// PATCH /v1/settings call would update.
+func enableCloudSettings(t *testing.T, control store.ControlStore, phoneNumberID, accessToken string) {
 	t.Helper()
 	settings := DefaultSettings()
 	settings.Cloud.Enabled = true
@@ -239,17 +128,15 @@ func enableProjectCloud(t *testing.T, r *Registry, projectID, phoneNumberID, acc
 	if err != nil {
 		t.Fatalf("marshal settings: %v", err)
 	}
-	if err := r.control.UpdateProjectSettings(context.Background(), projectID, string(b)); err != nil {
-		t.Fatalf("UpdateProjectSettings: %v", err)
+	if err := control.UpdateSettings(context.Background(), string(b)); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
 	}
 }
 
-// TestRegistry_PerProjectCloudSettingsPopulateRuntimeCloud is a regression
-// test for the Meta Cloud API backend being per-project (not instance-wide):
-// enabling it via one project's Settings.Cloud must not affect another
-// project on the same registry, and must make the Runtime carry a working
-// Cloud client alongside its (independent, still-whatsmeow) WA pool.
-func TestRegistry_PerProjectCloudSettingsPopulateRuntimeCloud(t *testing.T) {
+// TestLoad_CloudSettingsPopulateRuntimeCloud is a regression test: enabling
+// Settings.Cloud must make the Runtime carry a working Cloud client
+// alongside its (independent, still-whatsmeow) WA pool.
+func TestLoad_CloudSettingsPopulateRuntimeCloud(t *testing.T) {
 	ctx := context.Background()
 
 	metaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -259,27 +146,35 @@ func TestRegistry_PerProjectCloudSettingsPopulateRuntimeCloud(t *testing.T) {
 	}))
 	defer metaServer.Close()
 
-	r := newTestRegistry(t)
-	r.cloudBaseURLOverride = metaServer.URL
-	r.cloudHTTPClientOverride = metaServer.Client()
-
-	cloudProj, err := r.Create(ctx, "acme-otp", "Acme OTP")
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	control, err := store.NewSQLiteControlStore(filepath.Join(dir, "control.db"), logger)
 	if err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatalf("NewSQLiteControlStore: %v", err)
 	}
-	enableProjectCloud(t, r, cloudProj.ID, "test-phone-id", "test-token")
+	t.Cleanup(func() { control.Close() })
+	enableCloudSettings(t, control, "test-phone-id", "test-token")
 
-	plainProj, err := r.Create(ctx, "acme-chat", "Acme Chat")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
+	templatesPath := filepath.Join(dir, "templates.toml")
+	if err := os.WriteFile(templatesPath, []byte("[en]\notp_message = \"code: {{code}}\"\n"), 0644); err != nil {
+		t.Fatalf("write templates.toml: %v", err)
 	}
 
-	rt, err := r.Get(ctx, cloudProj.ID)
+	hub := ws.NewHub(logger)
+	rt, err := Load(ctx, control, hub, logger, LoadOptions{
+		InstanceName:            "Acme OTP",
+		DataDir:                 dir,
+		TemplatesPath:           templatesPath,
+		CloudBaseURLOverride:    metaServer.URL,
+		CloudHTTPClientOverride: metaServer.Client(),
+	})
 	if err != nil {
-		t.Fatalf("Get cloud project: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
+	t.Cleanup(rt.Close)
+
 	if rt.Cloud == nil {
-		t.Fatal("expected rt.Cloud to be set for the project with Cloud enabled")
+		t.Fatal("expected rt.Cloud to be set when Settings.Cloud.Enabled is true")
 	}
 	if !rt.Cloud.IsConnected() {
 		t.Fatal("expected rt.Cloud to have verified its credentials against the (fake) Meta API during load")
@@ -287,12 +182,138 @@ func TestRegistry_PerProjectCloudSettingsPopulateRuntimeCloud(t *testing.T) {
 	if rt.WA == nil {
 		t.Fatal("expected rt.WA (whatsmeow pool) to still be set independently of Cloud")
 	}
+}
 
-	otherRt, err := r.Get(ctx, plainProj.ID)
+// TestLoad_RegistersForInboundWhenWabaIDAndPinSet is a regression test for
+// the registration step Meta requires before it'll actually deliver
+// inbound webhooks: Load must call /register then /subscribed_apps when
+// WabaID+Pin are configured, and must NOT call either for a send-only
+// (OTP/messages) Cloud setup that leaves them empty.
+func TestLoad_RegistersForInboundWhenWabaIDAndPinSet(t *testing.T) {
+	ctx := context.Background()
+
+	var registerCalled, subscribeCalled bool
+	metaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/register"):
+			registerCalled = true
+			if r.Method != http.MethodPost {
+				t.Errorf("register: method = %s, want POST", r.Method)
+			}
+			var body map[string]string
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["pin"] != "123456" {
+				t.Errorf("register: pin = %q, want 123456", body["pin"])
+			}
+			json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		case strings.HasSuffix(r.URL.Path, "/subscribed_apps"):
+			subscribeCalled = true
+			if r.Method != http.MethodPost {
+				t.Errorf("subscribed_apps: method = %s, want POST", r.Method)
+			}
+			json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		default:
+			json.NewEncoder(w).Encode(map[string]string{
+				"id": "test-phone-id", "display_phone_number": "+1 555 0100",
+			})
+		}
+	}))
+	defer metaServer.Close()
+
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	control, err := store.NewSQLiteControlStore(filepath.Join(dir, "control.db"), logger)
 	if err != nil {
-		t.Fatalf("Get plain project: %v", err)
+		t.Fatalf("NewSQLiteControlStore: %v", err)
 	}
-	if otherRt.Cloud != nil {
-		t.Fatal("expected a different project with Cloud disabled to have a nil rt.Cloud, even though the registry has a cloud test override")
+	t.Cleanup(func() { control.Close() })
+
+	settings := DefaultSettings()
+	settings.Cloud.Enabled = true
+	settings.Cloud.PhoneNumberID = "test-phone-id"
+	settings.Cloud.AccessToken = "test-token"
+	settings.Cloud.WabaID = "test-waba-id"
+	settings.Cloud.Pin = "123456"
+	b, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+	if err := control.UpdateSettings(ctx, string(b)); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+
+	templatesPath := filepath.Join(dir, "templates.toml")
+	if err := os.WriteFile(templatesPath, []byte("[en]\notp_message = \"code: {{code}}\"\n"), 0644); err != nil {
+		t.Fatalf("write templates.toml: %v", err)
+	}
+
+	hub := ws.NewHub(logger)
+	rt, err := Load(ctx, control, hub, logger, LoadOptions{
+		InstanceName:            "Acme Inbound",
+		DataDir:                 dir,
+		TemplatesPath:           templatesPath,
+		CloudBaseURLOverride:    metaServer.URL,
+		CloudHTTPClientOverride: metaServer.Client(),
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	t.Cleanup(rt.Close)
+
+	if !registerCalled {
+		t.Error("expected Load to call /register when WabaID+Pin are set")
+	}
+	if !subscribeCalled {
+		t.Error("expected Load to call /subscribed_apps when WabaID+Pin are set")
+	}
+}
+
+// TestLoad_SkipsRegistrationWithoutPin is a regression test for the other
+// half of the same behavior: a send-only Cloud setup (no Pin) must not
+// attempt registration at all — Meta's /register fails loudly without one,
+// and OTP/message sending never needed it.
+func TestLoad_SkipsRegistrationWithoutPin(t *testing.T) {
+	ctx := context.Background()
+
+	var registerCalled bool
+	metaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/register") {
+			registerCalled = true
+		}
+		json.NewEncoder(w).Encode(map[string]string{
+			"id": "test-phone-id", "display_phone_number": "+1 555 0100",
+		})
+	}))
+	defer metaServer.Close()
+
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	control, err := store.NewSQLiteControlStore(filepath.Join(dir, "control.db"), logger)
+	if err != nil {
+		t.Fatalf("NewSQLiteControlStore: %v", err)
+	}
+	t.Cleanup(func() { control.Close() })
+	enableCloudSettings(t, control, "test-phone-id", "test-token")
+
+	templatesPath := filepath.Join(dir, "templates.toml")
+	if err := os.WriteFile(templatesPath, []byte("[en]\notp_message = \"code: {{code}}\"\n"), 0644); err != nil {
+		t.Fatalf("write templates.toml: %v", err)
+	}
+
+	hub := ws.NewHub(logger)
+	rt, err := Load(ctx, control, hub, logger, LoadOptions{
+		InstanceName:            "Acme SendOnly",
+		DataDir:                 dir,
+		TemplatesPath:           templatesPath,
+		CloudBaseURLOverride:    metaServer.URL,
+		CloudHTTPClientOverride: metaServer.Client(),
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	t.Cleanup(rt.Close)
+
+	if registerCalled {
+		t.Error("expected Load to skip /register entirely when Pin is empty")
 	}
 }

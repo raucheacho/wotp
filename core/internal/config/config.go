@@ -21,9 +21,8 @@ type Config struct {
 	Storage StorageConfig `toml:"storage"`
 }
 
-// ProjectConfig holds instance identification (display metadata only —
-// not to be confused with the multi-tenant "project" concept in
-// core/internal/project, which this instance can host many of).
+// ProjectConfig holds this instance's display metadata (name, ref) — used
+// for the whatsmeow device name and dashboard title.
 type ProjectConfig struct {
 	Name string `toml:"name"`
 	Ref  string `toml:"ref"`

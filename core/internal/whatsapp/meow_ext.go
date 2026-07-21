@@ -2,48 +2,58 @@ package whatsapp
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
-	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
 
+// SendLocation sends a location pin to the given phone number via
+// WhatsApp. opts.Name/Address are optional.
+func (m *MeowClient) SendLocation(ctx context.Context, phone string, opts LocationSendOptions) (*SendResult, error) {
+	if !m.IsConnected() {
+		return nil, fmt.Errorf("whatsapp: not connected")
+	}
+	jid := toJID(phone)
+
+	loc := &waE2E.LocationMessage{
+		DegreesLatitude:  proto.Float64(opts.Latitude),
+		DegreesLongitude: proto.Float64(opts.Longitude),
+	}
+	if opts.Name != "" {
+		loc.Name = proto.String(opts.Name)
+	}
+	if opts.Address != "" {
+		loc.Address = proto.String(opts.Address)
+	}
+
+	resp, err := m.client.SendMessage(ctx, jid, &waE2E.Message{LocationMessage: loc})
+	if err != nil {
+		m.emitEvent(Event{Type: EventMessageFailed, Phone: phone, Error: err.Error(), At: time.Now().UTC()})
+		return nil, fmt.Errorf("whatsapp: send location: %w", err)
+	}
+
+	m.emitEvent(Event{Type: EventMessageSent, Phone: phone, MessageID: resp.ID, At: time.Now().UTC()})
+	return &SendResult{MessageID: resp.ID}, nil
+}
+
 // SendMedia sends a media message to the given phone number via WhatsApp.
-func (m *MeowClient) SendMedia(ctx context.Context, phone, url, base64Data, caption string) (*SendResult, error) {
+// Kind selects the upload type and waE2E.Message field — see
+// mediaKindHandlers in pool.go, shared with Pool.SendMedia.
+func (m *MeowClient) SendMedia(ctx context.Context, phone string, opts MediaSendOptions) (*SendResult, error) {
 	if !m.IsConnected() {
 		return nil, fmt.Errorf("whatsapp: not connected")
 	}
 
-	var data []byte
-	var err error
-
-	if base64Data != "" {
-		data, err = base64.StdEncoding.DecodeString(base64Data)
-		if err != nil {
-			return nil, fmt.Errorf("whatsapp: invalid base64 data: %w", err)
-		}
-	} else if url != "" {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return nil, fmt.Errorf("whatsapp: invalid url: %w", err)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("whatsapp: download media: %w", err)
-		}
-		defer resp.Body.Close()
-		data, err = io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, fmt.Errorf("whatsapp: read media: %w", err)
-		}
-	} else {
-		return nil, fmt.Errorf("whatsapp: neither url nor base64Data provided")
+	// Shared with Pool.SendMedia — includes the response status-code check
+	// that makes a gated/expired/error-page URL fail loudly here instead of
+	// silently uploading the error page as if it were the file.
+	data, err := fetchMediaData(ctx, opts.URL, opts.Base64Data)
+	if err != nil {
+		return nil, err
 	}
 
 	contentType := http.DetectContentType(data)
@@ -55,23 +65,12 @@ func (m *MeowClient) SendMedia(ctx context.Context, phone, url, base64Data, capt
 		_ = m.client.SendChatPresence(ctx, jid, types.ChatPresencePaused, types.ChatPresenceMediaText)
 	}
 
-	resp, err := m.client.Upload(ctx, data, whatsmeow.MediaImage)
+	mediaType, buildMessage := mediaKindHandlers(opts.Kind)
+	resp, err := m.client.Upload(ctx, data, mediaType)
 	if err != nil {
 		return nil, fmt.Errorf("whatsapp: upload media: %w", err)
 	}
-
-	msg := &waE2E.Message{
-		ImageMessage: &waE2E.ImageMessage{
-			Caption:       proto.String(caption),
-			Mimetype:      proto.String(contentType),
-			URL:           proto.String(resp.URL),
-			DirectPath:    proto.String(resp.DirectPath),
-			MediaKey:      resp.MediaKey,
-			FileEncSHA256: resp.FileEncSHA256,
-			FileSHA256:    resp.FileSHA256,
-			FileLength:    proto.Uint64(uint64(len(data))),
-		},
-	}
+	msg := buildMessage(resp, contentType, uint64(len(data)), opts.Caption, opts.Filename)
 
 	sendResp, err := m.client.SendMessage(ctx, jid, msg)
 	if err != nil {

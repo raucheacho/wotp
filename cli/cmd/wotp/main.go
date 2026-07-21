@@ -40,7 +40,6 @@ func main() {
 		commands.NewKeysCmd(),
 		commands.NewUpdateCmd(),
 		commands.NewDestroyCmd(),
-		commands.NewProjectCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {

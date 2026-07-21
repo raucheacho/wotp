@@ -19,8 +19,8 @@ import { Card } from '../components/ui/card';
 
 // Activity merges what used to be two separate screens (OTP Engine,
 // Messaging API) — they were both just "outbound messages sent through this
-// project," filtered differently. One feed, one type toggle, matches how an
-// operator actually thinks about it: "what did this project send recently."
+// instance," filtered differently. One feed, one type toggle, matches how an
+// operator actually thinks about it: "what did this instance send recently."
 type Kind = 'all' | 'otp' | 'message';
 
 const STATUS_ICONS: Record<MessageStatus, { icon: React.ReactNode; color: string }> = {
@@ -93,7 +93,7 @@ export default function ActivityScreen() {
       <div className="flex flex-col gap-2 mb-2">
         <h2 className="text-3xl font-bold tracking-tight">Activity</h2>
         <p className="text-muted-foreground text-lg">
-          Everything this project has sent — OTP codes and generic messages, in one feed.
+          Everything this instance has sent — OTP codes and generic messages, in one feed.
         </p>
       </div>
 

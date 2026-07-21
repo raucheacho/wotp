@@ -7,9 +7,13 @@
 
 /** Base class for all Wotp SDK errors. */
 export class WotpError extends Error {
-  constructor(message: string) {
+  /** HTTP status code returned by the API, if this came from a response (vs. a network error). */
+  public readonly statusCode?: number;
+
+  constructor(message: string, statusCode?: number) {
     super(message);
     this.name = 'WotpError';
+    this.statusCode = statusCode;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }

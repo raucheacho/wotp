@@ -133,19 +133,29 @@ func (e *Engine) Send(ctx context.Context, phone string) (*SendResult, error) {
 		return nil, err
 	}
 
+	// Link this send into the conversation for this phone number — the
+	// same call routeInboundMessage makes for inbound messages — so
+	// GET /v1/conversations/{id}/messages can show it alongside the rest
+	// of the thread instead of leaving OTPs in their own silo.
+	conv, err := e.store.GetOrCreateConversation(ctx, phone)
+	if err != nil {
+		return nil, fmt.Errorf("otp: get or create conversation: %w", err)
+	}
+
 	token := GenerateToken()
 	now := time.Now().UTC()
 	expiresAt := now.Add(time.Duration(e.config.ExpiryMinutes) * time.Minute)
 
 	req := &store.OTPRequest{
-		ID:        uuid.New().String(),
-		Token:     token,
-		Phone:     phone,
-		CodeHash:  codeHash,
-		Status:    store.StatusPending,
-		Attempts:  0,
-		CreatedAt: now,
-		ExpiresAt: expiresAt,
+		ID:             uuid.New().String(),
+		Token:          token,
+		Phone:          phone,
+		CodeHash:       codeHash,
+		Status:         store.StatusPending,
+		Attempts:       0,
+		ConversationID: conv.ID,
+		CreatedAt:      now,
+		ExpiresAt:      expiresAt,
 	}
 
 	if err := e.store.CreateOTPRequest(ctx, req); err != nil {

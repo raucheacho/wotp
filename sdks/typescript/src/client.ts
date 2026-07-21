@@ -6,13 +6,19 @@ import type {
   WotpClientOptions,
   SendOTPResponse,
   VerifyOTPResponse,
-  SendTextRequest,
+  SendMediaOptions,
   SendMediaRequest,
+  SendLocationOptions,
+  SendLocationRequest,
   MessageResponse,
   Chat,
   HealthResponse,
   PresenceState,
   APIErrorResponse,
+  Conversation,
+  ConversationMessage,
+  ConversationStateChangeOptions,
+  MediaFile,
 } from './types';
 import {
   WotpError,
@@ -24,6 +30,52 @@ import {
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY = 500;
 const DEFAULT_TIMEOUT = 10_000;
+
+// The API responds with snake_case JSON; Conversation/ConversationMessage
+// are exposed camelCase like every other type in this SDK, so raw wire
+// shapes are mapped explicitly here (same as sendOTP/verifyOTP/health do
+// inline) rather than casting the response directly.
+interface RawConversation {
+  id: string;
+  phone: string;
+  state: 'bot' | 'human';
+  created_at: string;
+  updated_at: string;
+}
+
+interface RawConversationMessage {
+  direction: 'inbound' | 'outbound';
+  kind?: string;
+  content: string;
+  push_name?: string;
+  media_mime_type?: string;
+  message_id?: string;
+  status?: string;
+  at: string;
+}
+
+function toConversation(raw: RawConversation): Conversation {
+  return {
+    id: raw.id,
+    phone: raw.phone,
+    state: raw.state,
+    createdAt: raw.created_at,
+    updatedAt: raw.updated_at,
+  };
+}
+
+function toConversationMessage(raw: RawConversationMessage): ConversationMessage {
+  return {
+    direction: raw.direction,
+    kind: raw.kind,
+    content: raw.content,
+    pushName: raw.push_name,
+    mediaMimeType: raw.media_mime_type,
+    messageId: raw.message_id,
+    status: raw.status,
+    at: raw.at,
+  };
+}
 
 /** Determines if an error is a transient network error worth retrying. */
 function isTransientError(status: number): boolean {
@@ -99,9 +151,8 @@ export class WotpClient {
   }
 
   /**
-   * Check the liveness of the Wotp instance. This is instance-wide — it has
-   * no notion of a single connected phone number, since one instance can
-   * host many projects each with their own numbers.
+   * Check the liveness of the Wotp instance. This is instance-wide — see
+   * `getChats()` or the dashboard for the connected number's own status.
    *
    * @returns Status and uptime.
    */
@@ -130,19 +181,45 @@ export class WotpClient {
   }
 
   /**
-   * Send a media message to the given phone number.
+   * Send a media message (image, video, audio, or document) to the given
+   * phone number. `kind` defaults to `'image'` when omitted.
    */
-  async sendMedia(phone: string, media: { url?: string; base64?: string; caption?: string }): Promise<MessageResponse> {
-    const data = await this.request<{ message_id?: string }>('POST', '/v1/messages/send', {
+  async sendMedia(phone: string, media: SendMediaOptions): Promise<MessageResponse> {
+    const body: SendMediaRequest = {
       phone,
-      type: 'media',
-      ...media,
-    });
+      type: media.kind ?? 'image',
+      url: media.url,
+      base64: media.base64,
+      caption: media.caption,
+      filename: media.filename,
+    };
+    const data = await this.request<{ message_id?: string }>('POST', '/v1/messages/send', body as unknown as Record<string, unknown>);
     return { messageId: data.message_id };
   }
 
   /**
-   * List the WhatsApp contacts visible to the project's connected numbers.
+   * Send a WhatsApp location message to the given phone number.
+   */
+  async sendLocation(
+    phone: string,
+    latitude: number,
+    longitude: number,
+    options?: SendLocationOptions,
+  ): Promise<MessageResponse> {
+    const body: SendLocationRequest = {
+      phone,
+      type: 'location',
+      latitude,
+      longitude,
+      name: options?.name,
+      address: options?.address,
+    };
+    const data = await this.request<{ message_id?: string }>('POST', '/v1/messages/send', body as unknown as Record<string, unknown>);
+    return { messageId: data.message_id };
+  }
+
+  /**
+   * List the WhatsApp contacts visible to the connected number.
    */
   async getChats(): Promise<Chat[]> {
     const data = await this.request<Chat[]>('GET', '/v1/chats');
@@ -154,6 +231,87 @@ export class WotpClient {
    */
   async setPresence(phone: string, state: PresenceState): Promise<void> {
     await this.request<{ ok: boolean }>('POST', '/v1/messages/presence', { phone, state });
+  }
+
+  // ─── Conversations & takeover ──────────────────────────────────
+
+  /** List every tracked conversation (one per contact that has ever messaged in). */
+  async listConversations(): Promise<Conversation[]> {
+    const data = await this.request<RawConversation[]>('GET', '/v1/conversations');
+    return data.map(toConversation);
+  }
+
+  /** Fetch a single conversation by id. */
+  async getConversation(id: string): Promise<Conversation> {
+    const data = await this.request<RawConversation>('GET', `/v1/conversations/${encodeURIComponent(id)}`);
+    return toConversation(data);
+  }
+
+  /**
+   * Get the full chronological thread for a conversation — inbound
+   * replies, outbound sends, and OTP sends merged together.
+   */
+  async getConversationMessages(id: string): Promise<ConversationMessage[]> {
+    const data = await this.request<RawConversationMessage[]>(
+      'GET',
+      `/v1/conversations/${encodeURIComponent(id)}/messages`,
+    );
+    return data.map(toConversationMessage);
+  }
+
+  /**
+   * Mark a conversation as human-owned. wotp keeps forwarding
+   * `message.received` either way — it's up to your own bot logic to read
+   * `conversationState` from the webhook payload and stay quiet.
+   */
+  async takeoverConversation(id: string, options?: ConversationStateChangeOptions): Promise<void> {
+    await this.setConversationState(id, 'takeover', options);
+  }
+
+  /** Hand a conversation back to the bot. */
+  async resumeConversation(id: string, options?: ConversationStateChangeOptions): Promise<void> {
+    await this.setConversationState(id, 'resume', options);
+  }
+
+  private async setConversationState(
+    id: string,
+    action: 'takeover' | 'resume',
+    options?: ConversationStateChangeOptions,
+  ): Promise<void> {
+    await this.request<{ state: string }>(
+      'POST',
+      `/v1/conversations/${encodeURIComponent(id)}/${action}`,
+      { actor: options?.actor, reason: options?.reason },
+    );
+  }
+
+  // ─── Inbound media ──────────────────────────────────────────────
+
+  /**
+   * Download the raw bytes of an inbound media message wotp captured at
+   * receive time (see `ConversationMessage.kind` / `MediaKind`). Throws a
+   * `WotpError` with `statusCode` 404 if the message wasn't a media
+   * message, or if the download itself failed when the message arrived.
+   */
+  async getMedia(messageId: string): Promise<MediaFile> {
+    const url = `${this.baseUrl}/v1/media/${encodeURIComponent(messageId)}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { apikey: this.apiKey },
+    });
+
+    if (response.ok) {
+      return {
+        data: await response.arrayBuffer(),
+        contentType: response.headers.get('Content-Type') ?? '',
+      };
+    }
+
+    const errorBody = (await response.json().catch(() => ({}))) as APIErrorResponse;
+    throw new WotpError(
+      errorBody.message ?? `Request failed with status ${response.status}`,
+      response.status,
+    );
   }
 
   // ─── Internal ────────────────────────────────────────────────
@@ -230,6 +388,7 @@ export class WotpClient {
         // Unknown error
         throw new WotpError(
           `Request failed with status ${response.status}: ${JSON.stringify(errorBody)}`,
+          response.status,
         );
       } catch (error) {
         // If it's a typed business error, rethrow immediately

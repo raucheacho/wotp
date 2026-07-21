@@ -35,9 +35,9 @@ func runReset(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Delete the entire data directory (control.db + every project's
-	// data.db/session.db — wotp-core manages its own layout underneath it,
-	// see core/internal/project/registry.go).
+	// Delete the entire data directory (control.db, data.db, session.db —
+	// wotp-core manages its own layout underneath it, see
+	// core/internal/project.Load).
 	dataDir := config.DataDir(projectDir)
 	if err := os.RemoveAll(dataDir); err != nil {
 		return fmt.Errorf("deleting data directory: %w", err)

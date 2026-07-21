@@ -59,9 +59,9 @@ func RenderCompose(cfg config.Config, projectDir string) error {
 }
 
 // EnsureDataDirs creates the data directory mounted into the container.
-// wotp-core manages its own layout underneath it (control.db + per-project
-// subdirectories — see core/internal/project/registry.go); the CLI only
-// needs the mount point itself to exist before `docker compose up`.
+// wotp-core manages its own layout underneath it (control.db, data.db,
+// session.db — see core/internal/project.Load); the CLI only needs the
+// mount point itself to exist before `docker compose up`.
 func EnsureDataDirs(projectDir string) error {
 	dir := config.DataDir(projectDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

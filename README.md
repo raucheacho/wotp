@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build](https://img.shields.io/github/actions/workflow/status/wotp/wotp/ci.yml?branch=main)](https://github.com/wotp/wotp/actions)
 
-Your own WhatsApp infrastructure — OTPs, transactional alerts, and webhooks. Includes API, dashboard, and SDKs in Go, TypeScript, and Python. A single instance can host multiple isolated projects, each with its own WhatsApp numbers, API keys, and message history.
+Your own WhatsApp infrastructure — OTPs, transactional alerts, and webhooks. Includes API, dashboard, and SDKs in Go, TypeScript, and Python. Each instance runs one WhatsApp number end to end; need a second number (e.g. OTP + a delivery bot), run a second instance.
 
 </div>
 
@@ -31,7 +31,6 @@ Your own WhatsApp infrastructure — OTPs, transactional alerts, and webhooks. I
 
 - [Quickstart](#quickstart)
 - [Architecture](#architecture)
-- [Multi-project walkthrough](#multi-project-walkthrough)
 - [CLI reference](#cli-reference)
 - [API reference](#api-reference)
 - [SDK examples](#sdk-examples)
@@ -62,99 +61,53 @@ wotp start
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────────────┐
-│                   wotp-core (single Go binary)                    │
-│                                                                    │
-│  ┌───────────────────────────────────────────────────────────┐    │
-│  │  REST API (Chi) + WebSocket hub                           │    │
-│  └───────────────────────────────────────────────────────────┘    │
-│                              │                                    │
-│           apikey → project ──┴── root key → /v1/projects*         │
-│                              │                                    │
-│   ┌──────────────────────────▼──────────────────────────────┐     │
-│   │  project A          project B          project C  ...   │     │
-│   │  ┌────────────┐    ┌────────────┐    ┌────────────┐     │     │
-│   │  │ 1 number   │    │ 1 number   │    │ Cloud API  │     │     │
-│   │  │ (whatsmeow)│    │ (whatsmeow)│    │ (Meta, OTP)│     │     │
-│   │  │ OTP engine │    │ OTP engine │    │ OTP engine │     │     │
-│   │  │ SQLite     │    │ SQLite     │    │ SQLite     │     │     │
-│   │  └────────────┘    └────────────┘    └────────────┘     │     │
-│   └───────────────────────────────────────────────────────────┘   │
-│  ┌───────────────────────────────────────────────────────────┐    │
-│  │  Dashboard (static, embed.FS) — project switcher           │    │
-│  └───────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│                 wotp-core (single Go binary)                  │
+│                                                                │
+│  ┌───────────────────────────────────────────────────────┐    │
+│  │  REST API (Chi) + WebSocket hub                        │    │
+│  └───────────────────────────────────────────────────────┘    │
+│                              │                                │
+│                apikey → anon | service tier                   │
+│                              │                                │
+│   ┌──────────────────────────▼──────────────────────────┐     │
+│   │  1 WhatsApp number (whatsmeow) or Cloud API (Meta)   │     │
+│   │  OTP engine · conversations · SQLite                 │     │
+│   └───────────────────────────────────────────────────────┘   │
+│  ┌───────────────────────────────────────────────────────┐    │
+│  │  Dashboard (static, embed.FS)                          │    │
+│  └───────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────┘
                             ▲
                             │ HTTP + WebSocket, port 54321
                             ▼
                    Browser / SDK client
 ```
 
-One binary. One image. One port. One process — but **multi-tenant**: a single instance can host any number of isolated projects, each with its own WhatsApp number, API keys, and message history. A project is capped at exactly one number (see below for why) — running several numbers means running several projects, or several instances. No Redis, no Postgres, no message queue required — just SQLite: one file per project (`data/projects/<id>/{data.db,session.db}`), plus a shared `control.db` for the project/key registry.
+One binary. One image. One port. One process. **Mono-tenant**: one instance runs exactly one WhatsApp number (whatsmeow) and/or one Cloud API backend. No Redis, no Postgres, no message queue required — just SQLite, three files under `data/`: `control.db` (API keys, paired number, settings), `data.db` (OTPs, messages, conversations, webhook logs), `session.db` (whatsmeow's own device state).
 
-**Why one number per project, not a pool:** an earlier design let a project round-robin/fail over across several whatsmeow numbers. It's not worth the complexity: for a two-way conversation, a customer's reply could land on a different number than the one they messaged, which is confusing at best. For one-shot sends like OTP, spreading traffic across several unofficial numbers dilutes ban risk without removing it, at the real operational cost of running several actual phone numbers. If OTP reliability at real scale matters, the answer is the Cloud API backend below, not more whatsmeow numbers.
-
-A fresh install still works with zero project management: `wotp init && wotp start` auto-creates a `default` project, so the single-tenant quickstart above works unchanged. Multi-project is opt-in via `wotp project create`.
-
-## Multi-project walkthrough
-
-```bash
-wotp init my-instance
-cd my-instance
-wotp start
-# the "default" project is ready — scan its QR from the dashboard
-
-# Create an isolated project for a client or a second app
-wotp project create acme --name "Acme Corp"
-# -> prints acme's anon_key / service_key, shown once
-
-# Link a WhatsApp number to it
-wotp project add-number acme
-# -> open the dashboard, switch to "Acme Corp", scan the QR code shown there
-# Each project is capped at one number — a second add-number call is
-# rejected with a clear error instead of silently round-robining.
-
-# List projects, or a project's numbers
-wotp project list
-wotp project keys acme
-
-# Use acme's own anon key — completely separate data/history from "default"
-curl -X POST http://localhost:54321/v1/otp/send \
-  -H "apikey: <acme's anon key>" \
-  -d '{"phone": "+212600000000"}'
-```
-
-Each project's OTPs, messages, webhooks, and WhatsApp numbers are fully isolated: a key from one project can never read or send through another's data.
+**Why one number per instance, not a pool:** an earlier design let one instance round-robin/fail over across several whatsmeow numbers. It's not worth the complexity: for a two-way conversation, a customer's reply could land on a different number than the one they messaged, which is confusing at best. For one-shot sends like OTP, spreading traffic across several unofficial numbers dilutes ban risk without removing it, at the real operational cost of running several actual phone numbers. If OTP reliability at real scale matters, the answer is the Cloud API backend below, not more whatsmeow numbers. Need a genuinely separate number (an OTP number and a delivery-bot number, say) — run a second `wotp init && wotp start` in a second directory. Each instance is fully self-contained: its own keys, its own data, its own port.
 
 ## CLI reference
 
-Every command besides `wotp project *` operates on the local `wotp/` directory (found by walking up from the current directory) and Docker directly.
+Every command operates on the local `wotp/` directory (found by walking up from the current directory) and Docker directly.
 
-| Command                                         | What it does                                                                                                      |
-| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `wotp init [name]`                              | Scaffold a new instance: `config.toml`, seed templates, `.env` with anon/service/root keys                        |
-| `wotp start`                                    | Render `docker-compose.yml`, pull the image if needed, start the container, print keys and the dashboard URL      |
-| `wotp stop`                                     | Stop containers; all data is preserved                                                                            |
-| `wotp restart`                                  | Stop, re-render config (in case it changed), start again                                                          |
-| `wotp status`                                   | Check whether the container is running and the API is responding                                                  |
-| `wotp logs`                                     | Stream container logs in real time                                                                                |
-| `wotp keys`                                     | Show the anon/service/root keys stored in `.env`                                                                  |
-| `wotp update`                                   | Pull the latest image and restart                                                                                 |
-| `wotp reset`                                    | Delete **all** instance data (every project's WhatsApp sessions and history) and restart — forces a fresh QR scan |
-| `wotp destroy`                                  | Remove containers and volumes; keeps `config.toml`, `.env`, and `seed/` so `wotp start` can recreate the instance |
-| `wotp project create <slug> [--name]`           | Create a new project; prints its anon/service keys once                                                           |
-| `wotp project list`                             | List projects on this instance                                                                                    |
-| `wotp project rm <slug>`                        | Permanently delete a project and all its data                                                                     |
-| `wotp project add-number <slug>`                | Start pairing a new WhatsApp number for a project                                                                 |
-| `wotp project keys <slug>`                      | Show a project's numbers and their connection status                                                              |
-| `wotp project keys <slug> --regenerate-anon`    | Issue a new anon key for that project, invalidating the previous one                                              |
-| `wotp project keys <slug> --regenerate-service` | Same, for the service key                                                                                         |
-
-`wotp project *` commands talk HTTP to the already-running instance using its root key (read from the local `.env`) — the instance itself is the source of truth for projects, not the CLI's local files.
+| Command             | What it does                                                                                                       |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `wotp init [name]`  | Scaffold a new instance: `config.toml`, seed templates, `.env` with anon/service keys                              |
+| `wotp start`        | Render `docker-compose.yml`, pull the image if needed, start the container, print keys and the dashboard URL       |
+| `wotp stop`         | Stop containers; all data is preserved                                                                             |
+| `wotp restart`      | Stop, re-render config (in case it changed), start again                                                           |
+| `wotp status`       | Check whether the container is running and the API is responding                                                  |
+| `wotp logs`         | Stream container logs in real time                                                                                 |
+| `wotp keys`         | Show the anon/service keys stored in `.env`                                                                        |
+| `wotp update`       | Pull the latest image and restart                                                                                  |
+| `wotp reset`        | Delete **all** instance data (WhatsApp session and history) and restart — forces a fresh QR scan                   |
+| `wotp destroy`      | Remove containers and volumes; keeps `config.toml`, `.env`, and `seed/` so `wotp start` can recreate the instance  |
 
 ## API Reference
 
-Most endpoints require an `apikey` header with your **anon** or **service** key — each key belongs to exactly one project, and every request is scoped to that project automatically (no `project_id` to pass). Project _management_ (`/v1/projects*` below) requires the instance's **root** key instead.
+Most endpoints require an `apikey` header with your **anon** or **service** key. Instance-admin endpoints (number pairing, key rotation, settings) require **service**.
 
 ### `POST /v1/otp/send`
 
@@ -199,7 +152,7 @@ curl -X POST http://localhost:54321/v1/otp/verify \
 
 ### `POST /v1/messages/send`
 
-Send a generic transactional message (text or media) to a phone number.
+Send a generic transactional message to a phone number. `type` is `text`, `image`, `video`, `audio`, `document`, or `location` (`media` is accepted too, as a legacy alias for `image`). Media sends take `url` (a public link) and, for `document`, `filename`; `caption` works for every kind except `audio` — WhatsApp's protocol carries no caption field for voice notes. Location sends take `latitude`/`longitude` (required) and `name`/`address` (optional).
 
 ```bash
 curl -X POST http://localhost:54321/v1/messages/send \
@@ -229,21 +182,57 @@ curl -X POST http://localhost:54321/v1/messages/presence \
 
 ### `GET /v1/messages` · `GET /v1/chats`
 
-List recent generic messages, or the WhatsApp contacts visible to the project's connected numbers. Both scoped to the calling key's project.
+List recent generic messages, or the WhatsApp contacts visible to the connected number.
 
 ### Webhooks & inbound messages
 
-Wotp supports **two-way communication**. Each project can configure its own webhook endpoint (via the dashboard or API) to instantly receive HTTP POST payloads when:
+Wotp supports **two-way communication**. Configure a webhook endpoint (via the dashboard or `PATCH /v1/settings`) to instantly receive HTTP POST payloads when:
 
-- `message.received`: a user replies to one of that project's WhatsApp numbers (useful for connecting AI support agents like n8n/Make).
+- `message.received`: a user replies to your WhatsApp number (useful for connecting AI support agents like n8n/Make).
 - `message.sent`, `message.delivered`, `message.read`: status updates for your OTPs and outbound messages.
-- `session.disconnected` / `session.reconnected`: a number loses or regains connection.
+- `session.disconnected` / `session.reconnected`: the number loses or regains connection.
 
-By default, wotp **ignores group chats and WhatsApp status (stories) updates** for every project — `message.received` only fires for direct 1:1 messages, keeping your webhook feed and dashboard focused on transactional conversations. Toggle `ignore_groups`/`ignore_status` per project from the dashboard.
+By default, wotp **ignores group chats and WhatsApp status (stories) updates** — `message.received` only fires for direct 1:1 messages, keeping your webhook feed and dashboard focused on transactional conversations. Toggle `ignore_groups`/`ignore_status` from the dashboard.
+
+### Conversations & human takeover
+
+Every inbound message from a contact is tracked in a **conversation** (one per phone number, created automatically on first contact) that's either `bot` (default) or `human`. Take a conversation over from your own app's admin UI or an LLM tool call — **not from the wotp dashboard**, which stays infra-only by design; conversations, agents, and takeover UX belong in your application, wotp just gives it the mechanism. Every send (OTP included) is linked to its conversation too, so `GET /v1/conversations/<id>/messages` shows the full thread — inbound replies, outbound sends, and OTPs — in one chronological list.
+
+```bash
+# List conversations
+curl -H "apikey: wotp_anon_xxx" http://localhost:54321/v1/conversations
+
+# Full history for one conversation (inbound + outbound, chronological)
+curl -H "apikey: wotp_anon_xxx" http://localhost:54321/v1/conversations/<id>/messages
+
+# Take over — marks the conversation human; wotp keeps forwarding
+# message.received either way, now carrying conversation_state so your
+# bot knows to stay quiet
+curl -X POST http://localhost:54321/v1/conversations/<id>/takeover \
+  -H "apikey: wotp_anon_xxx" \
+  -d '{"actor": "agent-42", "reason": "customer asked for a refund"}'
+
+# Hand it back to the bot
+curl -X POST http://localhost:54321/v1/conversations/<id>/resume \
+  -H "apikey: wotp_anon_xxx" \
+  -d '{"actor": "agent-42", "reason": "resolved"}'
+```
+
+`actor`/`reason` are optional but recorded on every takeover/resume — a takeover is never a silent state flip. wotp doesn't decide whether your bot should act on a human-owned conversation — it always forwards `message.received` and always records/broadcasts it over the WebSocket hub, `human` or not. It's up to your app's own logic to read `conversation_state` from the webhook payload and skip auto-replying when it's `human`. This also means your app keeps full visibility (logging, notifications, anything else) even while a human is handling the thread — wotp never goes silent. Sending a reply while `human` uses the same `POST /v1/messages/send` you already use for outbound messages — there's no separate "send as human" endpoint.
+
+### Inbound media (`GET /v1/media/{message_id}`)
+
+When a contact sends an image, video, voice note, or document, wotp downloads it right away (both on whatsmeow and Cloud API) and makes the raw bytes retrievable — so a bot built on wotp can pull the file and run it through Whisper, OCR, or whatever else your app needs, without wotp itself trying to be smart about the content:
+
+```bash
+curl -H "apikey: wotp_anon_xxx" http://localhost:54321/v1/media/<message_id> -o file
+```
+
+`GET /v1/conversations/<id>/messages` and the `message.received` webhook payload both carry `media_kind` (`image`/`video`/`audio`/`document`) and the mimetype for any message that had an attachment — a caption, if the message had one, shows up as the message's `content`/`text` same as a plain text message would. Note two limitations by design: there's no retention or cleanup policy for downloaded media yet (files live under the instance's data directory until you delete them, same all-or-nothing model as `wotp reset`), and `GET /v1/media/{id}` 404s if the download itself failed at receive time even though the message row exists — check for a non-empty `media_kind` before assuming the file is there.
 
 ### `GET /v1/health`
 
-Instance-wide liveness check (no auth required). Per-number connection status is per-project — see `wotp project keys <slug>` or the dashboard.
+Instance-wide liveness check (no auth required).
 
 ```json
 {
@@ -252,29 +241,15 @@ Instance-wide liveness check (no auth required). Per-number connection status is
 }
 ```
 
-### Multi-project management
+### Instance administration
 
-Managing projects requires the instance's **root** key (printed by `wotp init`/`wotp start`, or via `wotp keys`) — everything below is also available as `wotp project ...` CLI commands.
+These require the **service** key.
 
-#### `POST /v1/projects`
+#### `POST /v1/numbers/pair`
 
-```bash
-curl -X POST http://localhost:54321/v1/projects \
-  -H "apikey: wotp_root_xxx" \
-  -d '{"slug": "acme", "name": "Acme Corp"}'
-```
+Starts pairing a WhatsApp number. The QR code streams via the WebSocket hub (`number.qr` event) and is also renderable at `GET /v1/numbers/qr` — same PNG/JSON behavior the dashboard uses. Rejected with `409` if a number is already paired — each instance is capped at one.
 
-Returns the new project plus its freshly generated `anon_key`/`service_key` — shown once, like at `wotp init` time.
-
-#### `GET /v1/projects` · `DELETE /v1/projects/{id}`
-
-List or permanently delete a project (its numbers, message history, and API keys).
-
-#### `POST /v1/projects/{id}/numbers/pair`
-
-Starts pairing a new WhatsApp number for that project. The QR code streams via the WebSocket hub (`number.qr` event, scoped to that project) and is also renderable at `GET /v1/projects/{id}/numbers/qr` — same PNG/JSON behavior the dashboard uses.
-
-#### `GET /v1/projects/{id}/numbers`
+#### `GET /v1/numbers`
 
 ```json
 [
@@ -286,19 +261,27 @@ Starts pairing a new WhatsApp number for that project. The QR code streams via t
 ]
 ```
 
-#### `POST /v1/projects/{id}/keys/regenerate`
+#### `GET /v1/cloud-status`
+
+Whether the Cloud API backend is enabled and its credentials verified — see [Meta Cloud API backend](#meta-cloud-api-backend-optional-alongside-whatsmeow) below.
+
+#### `POST /v1/keys/regenerate`
 
 `{"tier": "anon" | "service"}` — issues a new key for that tier, immediately invalidating the previous one.
 
+#### `GET /v1/settings` · `PATCH /v1/settings`
+
+Read or partially update the instance's OTP/messaging/WhatsApp/webhook/Cloud settings — see [Configuration](#configuration). A `PATCH` takes effect immediately (no restart needed), without disconnecting an already-paired number.
+
 ### Error responses
 
-| HTTP Code     | Error                                       | Description                                                                |
-| ------------- | ------------------------------------------- | -------------------------------------------------------------------------- |
-| `400`         | `invalid_code`                              | OTP code is incorrect                                                      |
-| `400` / `410` | `expired_token`                             | Token has expired                                                          |
-| `401`         | `invalid api key` / `missing apikey header` | Key is missing, unknown, or malformed                                      |
-| `403`         | `insufficient permissions`                  | Key's tier can't access this endpoint (e.g. an anon key on `/v1/projects`) |
-| `429`         | `rate_limit_exceeded`                       | Rate limit exceeded (per phone number for OTPs, per minute for messages)   |
+| HTTP Code     | Error                                       | Description                                                            |
+| ------------- | -------------------------------------------- | ----------------------------------------------------------------------- |
+| `400`         | `invalid_code`                              | OTP code is incorrect                                                  |
+| `400` / `410` | `expired_token`                             | Token has expired                                                      |
+| `401`         | `invalid api key` / `missing apikey header` | Key is missing, unknown, or malformed                                  |
+| `403`         | `insufficient permissions`                  | Key's tier can't access this endpoint (e.g. an anon key on `/v1/numbers`) |
+| `429`         | `rate_limit_exceeded`                       | Rate limit exceeded (per phone number for OTPs, per minute for messages) |
 
 ## SDK Examples
 
@@ -369,11 +352,11 @@ except InvalidCodeError as e:
     print(f"Wrong code. {e.attempts_remaining} attempts left")
 ```
 
-All three SDKs take the same `apikey` your project's anon or service key — nothing SDK-side changes when you add more projects, since each project simply has its own key.
+All three SDKs take the same `apikey` — the instance's anon or service key.
 
 ## Configuration
 
-`wotp/config.toml` holds **instance-wide** settings only — everything else (OTP parameters, WhatsApp inbound filters, messaging, webhooks, default locale) is **per-project**, since a single instance can host many projects with different needs:
+`wotp/config.toml` holds **instance-wide** deployment settings only — display name, API port, storage driver:
 
 ```toml
 [project]
@@ -387,9 +370,9 @@ enable_dashboard = true
 driver = "sqlite"          # "sqlite" | "postgres"
 ```
 
-Per-project settings (`code_length`, `expiry_minutes`, `max_attempts`, `rate_limit_per_phone_per_hour`, `ignore_groups`, `ignore_status`, `simulate_typing`, webhook endpoint/secret, default locale, etc.) live in each project's row in the instance's control database and are managed via the dashboard or the API — not `config.toml`. A freshly created project gets sensible defaults (6-digit codes, 5-minute expiry, group/status events ignored) matching what a single-tenant instance shipped with before.
+Everything else — OTP parameters (`code_length`, `expiry_minutes`, `max_attempts`, `rate_limit_per_phone_per_hour`), messaging (`max_messages_per_minute`, `simulate_typing`), WhatsApp inbound filters (`ignore_groups`, `ignore_status`), webhook endpoint/secret, default locale, and the Cloud API backend — lives in one settings row in the instance's control database and is managed via the dashboard or `PATCH /v1/settings`, not `config.toml`. A fresh instance gets sensible defaults (6-digit codes, 5-minute expiry, group/status events ignored).
 
-Message templates in `wotp/seed/templates.toml` (shared across every project on the instance for now — per-project templates are on the roadmap):
+Message templates live in `wotp/seed/templates.toml`:
 
 ```toml
 [en]
@@ -403,15 +386,15 @@ otp_message = "Votre code de vérification : {{code}}. Valable {{expiry}} minute
 otp_message = "Click here to securely login: https://your-app.com/verify?code={{code}}"
 ```
 
-### Meta Cloud API backend (optional, per project, alongside whatsmeow)
+### Meta Cloud API backend (optional, alongside whatsmeow)
 
-By default a project sends everything through whatsmeow (unofficial, instant to set up — scan a QR and go). For OTP traffic specifically, whatsmeow numbers can get banned by WhatsApp: automated, one-shot messages to strangers are exactly the pattern its abuse detection looks for. If that matters for your deployment, a project can instead send OTPs through the official Meta WhatsApp Cloud API, which has no such ban risk — Meta hosts the connection, there's no session/device to protect.
+By default an instance sends everything through whatsmeow (unofficial, instant to set up — scan a QR and go). For OTP traffic specifically, whatsmeow numbers can get banned by WhatsApp: automated, one-shot messages to strangers are exactly the pattern its abuse detection looks for. If that matters for your deployment, an instance can instead send OTPs through the official Meta WhatsApp Cloud API, which has no such ban risk — Meta hosts the connection, there's no session/device to protect.
 
-This is a **per-project** setting (`Settings.Cloud`), not instance-wide — two projects on the same instance never share a Cloud number/token. Configure it from the dashboard's Numbers screen ("Configure" on the Cloud API card), or set it directly via `PATCH /v1/projects/{id}/settings`:
+Configure it from the dashboard's Numbers screen ("Configure" on the Cloud API card), or set it directly via `PATCH /v1/settings`:
 
 ```bash
-curl -X PATCH http://localhost:54321/v1/projects/<project-id>/settings \
-  -H "apikey: <root key>" \
+curl -X PATCH http://localhost:54321/v1/settings \
+  -H "apikey: <service key>" \
   -d '{
     "cloud": {
       "enabled": true,
@@ -423,9 +406,33 @@ curl -X PATCH http://localhost:54321/v1/projects/<project-id>/settings \
   }'
 ```
 
-Once enabled, `POST /v1/otp/send` for that project sends the code through `otp_template_name` instead of rendering a free-text `templates.toml` message — Meta requires OTPs to go through a pre-approved template, since an OTP is always the first message in a conversation and so always outside the 24-hour window free-form text needs. You can get a Meta phone number ID and access token without any business verification via Meta's free developer test tier (capped at 5 allow-listed recipients) to build and test against before registering a real number.
+Once enabled, `POST /v1/otp/send` sends the code through `otp_template_name` instead of rendering a free-text `templates.toml` message — Meta requires OTPs to go through a pre-approved template, since an OTP is always the first message in a conversation and so always outside the 24-hour window free-form text needs. You can get a Meta phone number ID and access token without any business verification via Meta's free developer test tier (capped at 5 allow-listed recipients) to build and test against before registering a real number.
 
-Everything other than OTP sending (messages, presence, chat listing) still goes through whatsmeow for that project — the Cloud backend today only covers the OTP path. Since a project is capped at one whatsmeow number anyway (see above), a project either sends OTPs via whatsmeow or via Cloud; it never needs both for the same traffic.
+`POST /v1/messages/send` (text and media — `type` can be `image`, `video`, `audio`, or `document`) also prefers Cloud once it's enabled, same as OTP — a Cloud-only instance isn't limited to OTP. `POST /v1/messages/presence` and `GET /v1/chats` prefer Cloud too. Since an instance is capped at one whatsmeow number anyway (see above), sends go via whichever backend is configured; it never needs both for the same traffic. This is deliberate: build and test against whatsmeow (no business verification needed, just scan a QR), then flip `cloud.enabled` for production — your integration code doesn't change.
+
+#### Receiving replies on a Cloud number (optional)
+
+By default a Cloud-backed instance is send-only: OTPs and messages go out, but a customer's reply never arrives — Meta delivers inbound traffic to a webhook URL you register, not a socket wotp can just listen on. To receive replies (and populate conversations — see above — for a Cloud number), set four more fields alongside the ones above:
+
+```json
+{
+  "cloud": {
+    "waba_id": "<your WhatsApp Business Account ID>",
+    "pin": "<the 6-digit two-step-verification PIN set in Meta WhatsApp Manager for this number>",
+    "app_secret": "<your Meta App Secret>",
+    "verify_token": "<any string you choose>"
+  }
+}
+```
+
+Once saved, wotp calls Meta's `/register` and `/subscribed_apps` for you (logged, non-fatal if they fail — an OTP-only setup with no `pin` skips this step entirely). Then, in the Meta app dashboard's webhook subscription settings, paste the webhook URL shown on the dashboard's Numbers screen (`https://<your-domain>/webhooks/meta`) and the same `verify_token` — Meta will hit it with a verification handshake, then start POSTing inbound messages and delivery/read receipts, signed with your App Secret so wotp can verify they actually came from Meta. This needs a publicly reachable HTTPS URL for your instance (a domain + reverse proxy, or a tunnel like ngrok while testing) — `localhost` only works for your own dashboard, not for Meta to reach.
+
+#### Presence and chat listing on Cloud
+
+Both work on Cloud too, once inbound is set up (see above) — with two structural differences from whatsmeow that the API absorbs so your integration code doesn't need to care:
+
+- **Presence** (`/v1/messages/presence`): Meta's Cloud API has no bare "start/stop typing for this number" call — a typing indicator is a side effect of marking a *specific inbound message* as read. wotp looks up the customer's most recent inbound message for you; if they've never messaged this number, presence errors clearly rather than silently no-op'ing (there's nothing to show a typing indicator in response to yet).
+- **Chat listing** (`/v1/chats`): Cloud has no contact-list endpoint at all — Meta simply doesn't expose one. wotp returns the numbers recorded in this instance's own conversation history instead (see [Conversations & human takeover](#conversations--human-takeover)), which only has entries once inbound is set up.
 
 ## Project structure
 
@@ -435,20 +442,20 @@ wotp/
 │   ├── cmd/wotp-core/           # main() — wiring, graceful shutdown
 │   ├── internal/
 │   │   ├── api/                 # HTTP handlers, routing, auth middleware
-│   │   ├── project/             # Registry: lazily loads/caches a per-project Runtime
-│   │   ├── whatsapp/            # whatsmeow client (Pool, one number per project) + Meta Cloud API client (CloudClient)
+│   │   ├── project/             # Load(): builds the instance's single Runtime
+│   │   ├── whatsapp/            # whatsmeow client (Pool, one number) + Meta Cloud API client (CloudClient)
 │   │   ├── otp/                 # code generation, hashing, verification
-│   │   ├── keys/                # API key generation/validation (anon/service/root tiers)
-│   │   ├── store/               # SQLite: ControlStore (projects/keys) + ProjectStore (otps/messages/webhooks)
+│   │   ├── keys/                # API key generation/validation (anon/service tiers)
+│   │   ├── store/                # SQLite: ControlStore (keys/number/settings) + ProjectStore (otps/messages/webhooks/conversations)
 │   │   ├── templates/           # OTP message template rendering
 │   │   ├── webhooks/            # outbound webhook dispatch
-│   │   └── ws/                  # WebSocket hub (broadcasts scoped per project)
+│   │   └── ws/                  # WebSocket hub
 │   ├── dashboard/                # React + Vite dashboard, embedded into the Go binary via go:embed
 │   └── Dockerfile
-├── cli/                          # wotp: the CLI (Cobra), drives Docker + talks HTTP for `project` commands
+├── cli/                          # wotp: the CLI (Cobra), drives Docker
 │   ├── cmd/wotp/
 │   └── internal/
-│       ├── commands/             # init, start, stop, project, ...
+│       ├── commands/             # init, start, stop, ...
 │       ├── config/               # local config.toml read/write, project directory discovery
 │       ├── docker/               # docker-compose template rendering + exec wrappers
 │       ├── keys/                 # local .env read/write
@@ -466,12 +473,12 @@ wotp/
 
 ## Security
 
-- **Three API key tiers**: `anon` (send/verify only, rate-limited, scoped to one project), `service` (per-project admin), `root` (instance-wide — create/list/delete projects, pair numbers)
-- **Rate limiting** per phone number (OTPs) and per minute (messages), enforced per project
+- **Two API key tiers**: `anon` (send/verify only, rate-limited) and `service` (instance admin — number pairing, key rotation, settings)
+- **Rate limiting** per phone number (OTPs) and per minute (messages)
 - **OTP codes are never stored in plain text** — hashed, never logged, never returned
 - **Dashboard is local-only and unauthenticated by default** (trusted by network position) — put it behind a reverse proxy with auth before exposing it publicly (see Roadmap)
-- **`.env` is gitignored** and holds anon/service/root keys in plaintext locally — never commit it
-- **Each project's data lives in its own SQLite file** — a bug or corruption in one project can't affect another's
+- **`.env` is gitignored** and holds anon/service keys in plaintext locally — never commit it
+- **Your number stays yours** — history lives in a SQLite file under `data/` that you own; back it up or export it like any local file, no vendor lock-in
 
 ## Development
 
@@ -500,9 +507,8 @@ cd core/dashboard && npx tsc --noEmit && npm run build
 
 | Version  | What's coming                                                                               |
 | -------- | ------------------------------------------------------------------------------------------- |
-| **v1.0** | Single-number instance, dashboard, 3 SDKs, CLI                                                             |
-| **v2.0** | Shipped — multi-project instances (one WhatsApp number per project), optional Cloud API backend for OTP, admin dashboard |
-| **v3.0** | Dashboard authentication when exposed publicly                                                             |
+| **v1.0** | Single-number instance, dashboard, 3 SDKs, CLI, optional Cloud API backend for OTP — shipped |
+| **v2.0** | Dashboard authentication when exposed publicly                                              |
 
 ## License
 

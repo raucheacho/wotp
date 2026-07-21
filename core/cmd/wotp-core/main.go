@@ -24,7 +24,7 @@ import (
 func main() {
 	configPath := flag.String("config", "config.toml", "path to config.toml")
 	templatesPath := flag.String("templates", "templates.toml", "path to templates.toml")
-	dataDir := flag.String("data", "./data", "path to data directory (control db + per-project data/session)")
+	dataDir := flag.String("data", "./data", "path to data directory (control.db + data.db + session.db)")
 	flag.Parse()
 
 	// Setup structured logger
@@ -58,17 +58,16 @@ func main() {
 
 	ctx := context.Background()
 
-	// wotp-core manages its own layout underneath dataDir (control.db +
-	// per-project subdirectories — see core/internal/project/registry.go),
-	// but the top-level directory itself must exist before we can open
-	// control.db in it.
+	// wotp-core is mono-tenant: control.db, data.db, and session.db all live
+	// directly under dataDir (see core/internal/project.Load) — the
+	// directory itself must exist before we can open control.db in it.
 	if err := os.MkdirAll(*dataDir, 0755); err != nil {
 		logger.Error("failed to create data directory", "error", err)
 		os.Exit(1)
 	}
 
-	// Control store: projects, api keys, number registry — shared across
-	// the whole instance (see core/internal/store/control.go).
+	// Control store: api keys, number registry, settings — see
+	// core/internal/store/control.go.
 	controlStore, err := store.NewSQLiteControlStore(*dataDir+"/control.db", logger)
 	if err != nil {
 		logger.Error("failed to init control store", "error", err)
@@ -76,47 +75,27 @@ func main() {
 	}
 	defer controlStore.Close()
 
-	// WebSocket hub is instance-wide; broadcasts are scoped per-project via
-	// ws.Event.ProjectID (see core/internal/ws/hub.go).
+	// WebSocket hub broadcasts to every connected dashboard client — one
+	// instance, nothing to scope events by.
 	wsHub := ws.NewHub(logger)
 
-	registry := project.NewRegistry(controlStore, *dataDir, *templatesPath, wsHub, logger)
-
 	keyMgr := keys.NewManager(controlStore)
-	server := api.NewServer(cfg, controlStore, registry, keyMgr, wsHub, logger)
 
-	// Forward each project's WhatsApp events to its webhooks/dashboard as
-	// soon as that project's Runtime is first loaded.
-	registry.SetOnRuntimeLoaded(server.StartEventForwarder)
+	loadOpts := project.LoadOptions{
+		InstanceName:  cfg.Project.Name,
+		DataDir:       *dataDir,
+		TemplatesPath: *templatesPath,
+	}
+	reload := func(ctx context.Context) (*project.Runtime, error) {
+		return project.Load(ctx, controlStore, wsHub, logger, loadOpts)
+	}
 
-	// Ensure an instance root key exists (authorizes /v1/projects*).
-	rootKey, err := keyMgr.EnsureRootKey(ctx)
+	// Ensure anon/service keys exist (importing WOTP_ANON_KEY/
+	// WOTP_SERVICE_KEY from the environment if set) before the first
+	// request can arrive.
+	anonKey, serviceKey, err := keyMgr.EnsureKeysWithEnvFallback(ctx)
 	if err != nil {
-		logger.Error("failed to ensure root key", "error", err)
-		os.Exit(1)
-	}
-	if rootKey != nil {
-		fmt.Printf("✔ Root key:    %s\n", rootKey.FullKey)
-	}
-
-	// Ensure a "default" project exists so a fresh install works out of the
-	// box without an explicit `wotp project create` step.
-	defaultProject, err := controlStore.GetProjectBySlug(ctx, "default")
-	if err != nil {
-		logger.Error("failed to look up default project", "error", err)
-		os.Exit(1)
-	}
-	if defaultProject == nil {
-		defaultProject, err = registry.Create(ctx, "default", cfg.Project.Name)
-		if err != nil {
-			logger.Error("failed to create default project", "error", err)
-			os.Exit(1)
-		}
-	}
-
-	anonKey, serviceKey, err := keyMgr.EnsureKeysWithEnvFallback(ctx, defaultProject.ID)
-	if err != nil {
-		logger.Error("failed to ensure api keys for default project", "error", err)
+		logger.Error("failed to ensure api keys", "error", err)
 		os.Exit(1)
 	}
 	if anonKey != nil {
@@ -126,35 +105,45 @@ func main() {
 		fmt.Printf("✔ Service key: %s\n", serviceKey.FullKey)
 	}
 
-	// Eagerly load and connect the default project so a fresh install
-	// immediately shows a QR to scan, matching today's zero-config UX.
-	defaultRuntime, err := registry.Get(ctx, defaultProject.ID)
+	// Eagerly load and connect the instance so a fresh install immediately
+	// shows a QR to scan, matching today's zero-config UX.
+	rt, err := reload(ctx)
 	if err != nil {
-		logger.Error("failed to load default project", "error", err)
+		logger.Error("failed to load runtime", "error", err)
 		os.Exit(1)
 	}
-	// Skip the whatsmeow auto-pairing prompt when this project is configured
-	// to send OTPs through the Cloud API instead (see project.Settings.Cloud)
-	// — it has no whatsmeow number to pair in the first place.
-	if !defaultRuntime.Settings.Cloud.Enabled && !defaultRuntime.WA.IsConnected() && len(defaultRuntime.WA.Numbers()) == 0 {
+
+	server := api.NewServer(cfg, controlStore, rt, reload, keyMgr, wsHub, logger)
+
+	// Forward this instance's WhatsApp events to its webhooks/dashboard.
+	go server.StartEventForwarder(rt)
+
+	// Skip the whatsmeow auto-pairing prompt when this instance is
+	// configured to send OTPs through the Cloud API instead (see
+	// project.Settings.Cloud) — it has no whatsmeow number to pair in the
+	// first place.
+	if !rt.Settings.Cloud.Enabled && !rt.WA.IsConnected() && len(rt.WA.Numbers()) == 0 {
 		connectCtx, connectCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer connectCancel()
 
-		qrChan, err := defaultRuntime.WA.Pair(connectCtx)
+		qrChan, err := rt.WA.Pair(connectCtx)
 		if err != nil {
-			logger.Error("failed to start pairing default project", "error", err)
+			logger.Error("failed to start pairing", "error", err)
 			os.Exit(1)
 		}
 		go func() {
 			for qr := range qrChan {
 				logger.Info("new QR code available, scan with WhatsApp")
-				defaultRuntime.SetLatestQR(qr)
+				rt.SetLatestQR(qr)
 			}
+			// The channel only closes once pairing is done (success or
+			// timeout) — clear the QR so the dashboard stops being served a
+			// stale/expired code indefinitely.
+			rt.SetLatestQR("")
 		}()
 	}
 
-	// Periodically expire stale OTPs for every project currently loaded in
-	// memory (dormant, never-accessed projects have nothing to sweep).
+	// Periodically expire stale OTPs.
 	tickerCtx, tickerCancel := context.WithCancel(ctx)
 	defer tickerCancel()
 	go func() {
@@ -165,13 +154,11 @@ func main() {
 			case <-tickerCtx.Done():
 				return
 			case <-ticker.C:
-				for _, rt := range registry.LoadedRuntimes() {
-					expired, err := rt.Store.ExpireStaleOTPs(ctx, time.Now())
-					if err != nil {
-						logger.Error("expire stale otps error", "project_id", rt.Project.ID, "error", err)
-					} else if expired > 0 {
-						logger.Info("expired stale otps", "project_id", rt.Project.ID, "count", expired)
-					}
+				expired, err := rt.Store.ExpireStaleOTPs(ctx, time.Now())
+				if err != nil {
+					logger.Error("expire stale otps error", "error", err)
+				} else if expired > 0 {
+					logger.Info("expired stale otps", "count", expired)
 				}
 			}
 		}
@@ -199,8 +186,6 @@ func main() {
 		logger.Error("http server shutdown error", "error", err)
 	}
 
-	for _, rt := range registry.LoadedRuntimes() {
-		rt.WA.Disconnect()
-	}
+	rt.WA.Disconnect()
 	logger.Info("wotp-core stopped")
 }

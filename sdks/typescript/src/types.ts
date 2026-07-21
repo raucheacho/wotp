@@ -44,9 +44,8 @@ export interface VerifyOTPResponse {
 
 /**
  * Response from `GET /v1/health`. This is an instance-wide liveness check —
- * it has no notion of a single connected phone number, since one instance
- * can host many projects each with their own numbers. See `getChats()` or
- * the dashboard for per-project connection state.
+ * see `getChats()` or the dashboard for the connected number's own status
+ * (an instance is mono-tenant: exactly one WhatsApp number).
  */
 export interface HealthResponse {
   /** `"ok"` when the instance is up. */
@@ -89,12 +88,43 @@ export interface SendTextRequest {
   text: string;
 }
 
-export interface SendMediaRequest {
-  phone: string;
-  type: 'media';
+/** Kind of attachment for `sendMedia()` — wotp supports the same four kinds
+ * on both its whatsmeow and Cloud API backends. */
+export type MediaKind = 'image' | 'video' | 'audio' | 'document';
+
+/** Options for `sendMedia()`. Exactly one of `url`/`base64` should be set. */
+export interface SendMediaOptions {
+  /** Defaults to `'image'` (the API's legacy `"media"` alias). */
+  kind?: MediaKind;
   url?: string;
   base64?: string;
   caption?: string;
+  /** Shown as the file name in the recipient's chat. Only meaningful when `kind` is `'document'`. */
+  filename?: string;
+}
+
+export interface SendMediaRequest {
+  phone: string;
+  type: MediaKind;
+  url?: string;
+  base64?: string;
+  caption?: string;
+  filename?: string;
+}
+
+/** Options for `sendLocation()` — both fields are optional. */
+export interface SendLocationOptions {
+  name?: string;
+  address?: string;
+}
+
+export interface SendLocationRequest {
+  phone: string;
+  type: 'location';
+  latitude: number;
+  longitude: number;
+  name?: string;
+  address?: string;
 }
 
 /**
@@ -106,7 +136,7 @@ export interface MessageResponse {
   messageId?: string;
 }
 
-/** A WhatsApp contact visible to one of the project's connected numbers. */
+/** A WhatsApp contact visible to the connected number. */
 export interface Chat {
   jid: string;
   name?: string;
@@ -114,3 +144,61 @@ export interface Chat {
 
 /** State accepted by `setPresence()`. */
 export type PresenceState = 'typing' | 'paused';
+
+// ─── Conversations & takeover ─────────────────────────────────────
+
+/** State of a `Conversation` — `'bot'` by default, `'human'` after a takeover. */
+export type ConversationState = 'bot' | 'human';
+
+/**
+ * A contact's WhatsApp conversation thread — one per phone number, created
+ * automatically on first inbound contact.
+ */
+export interface Conversation {
+  id: string;
+  phone: string;
+  state: ConversationState;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * One entry in `getConversationMessages()`'s merged, chronological thread —
+ * inbound replies, outbound sends, and OTP sends all show up here. `kind`
+ * is `'otp'`/`'text'`/`'media'` for outbound entries, or an inbound media
+ * message's kind (`'image'`/`'video'`/`'audio'`/`'document'`); absent for a
+ * plain inbound text/location message.
+ */
+export interface ConversationMessage {
+  direction: 'inbound' | 'outbound';
+  kind?: string;
+  content: string;
+  pushName?: string;
+  /** Set alongside `kind` for an inbound media message — see `getMedia()` to fetch the actual bytes. */
+  mediaMimeType?: string;
+  messageId?: string;
+  status?: string;
+  at: string;
+}
+
+/**
+ * Optional payload for `takeoverConversation()`/`resumeConversation()` —
+ * both fields are freeform, but recording them is what makes a takeover
+ * auditable instead of a silent state flip.
+ */
+export interface ConversationStateChangeOptions {
+  actor?: string;
+  reason?: string;
+}
+
+// ─── Inbound media ─────────────────────────────────────────────────
+
+/**
+ * Raw bytes of a downloaded inbound media message — an image, video, voice
+ * note, or document a contact sent in, ready to feed to OCR, Whisper, or
+ * wherever else your bot needs it.
+ */
+export interface MediaFile {
+  data: ArrayBuffer;
+  contentType: string;
+}

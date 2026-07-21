@@ -30,11 +30,22 @@ const { messageId } = await wotp.sendText('+212600000000', 'Hello world')
 // Send a media message
 await wotp.sendMedia('+212600000000', { url: 'https://example.com/image.png' })
 
+// Send a location
+await wotp.sendLocation('+212600000000', 33.5731, -7.5898, { name: 'Casablanca' })
+
 // Show a typing indicator
 await wotp.setPresence('+212600000000', 'typing')
 
 // List chats
 const chats = await wotp.getChats()
+
+// Read a conversation thread and take it over
+const conversations = await wotp.listConversations()
+const messages = await wotp.getConversationMessages(conversations[0].id)
+await wotp.takeoverConversation(conversations[0].id, { actor: 'agent-1' })
+
+// Download media a contact sent in (image/video/audio/document)
+const media = await wotp.getMedia('wamid.XXX')
 ```
 
 ## API Reference
@@ -79,15 +90,21 @@ Send a text message to the given phone number.
 
 - **Returns:** `Promise<{ messageId?: string }>`
 
-### `wotp.sendMedia(phone, media)`
+### `wotp.sendMedia(phone, options)`
 
-Send a media message. `media` is `{ url?: string; base64?: string; caption?: string }` — provide either `url` or `base64`.
+Send a media message. `options` is `SendMediaOptions`: `{ kind?: MediaKind; url?: string; base64?: string; caption?: string; filename?: string }` — provide either `url` or `base64`. `kind` is `'image' | 'video' | 'audio' | 'document'`, defaulting to `'image'`; `filename` only matters for `'document'`.
+
+- **Returns:** `Promise<{ messageId?: string }>`
+
+### `wotp.sendLocation(phone, latitude, longitude, options?)`
+
+Send a WhatsApp location message. `options` is `{ name?: string; address?: string }`, both optional.
 
 - **Returns:** `Promise<{ messageId?: string }>`
 
 ### `wotp.getChats()`
 
-List the WhatsApp contacts visible to the project's connected numbers.
+List the WhatsApp contacts visible to the connected number.
 
 - **Returns:** `Promise<Chat[]>` — each `Chat` is `{ jid: string; name?: string }`
 
@@ -96,6 +113,17 @@ List the WhatsApp contacts visible to the project's connected numbers.
 Set the typing indicator for a chat without sending a message. `state` is `'typing' | 'paused'`.
 
 - **Returns:** `Promise<void>`
+
+### Conversations & takeover
+
+`wotp.listConversations()`, `wotp.getConversation(id)`, `wotp.getConversationMessages(id)` — read a contact's conversation thread (inbound replies, outbound sends, and OTP sends merged chronologically, each returning `Conversation` / `ConversationMessage[]`). `wotp.takeoverConversation(id, options?)` / `wotp.resumeConversation(id, options?)` flip `state` between `'bot'` and `'human'`; `options` is `{ actor?: string; reason?: string }`.
+
+### `wotp.getMedia(messageId)`
+
+Downloads the raw bytes of an inbound image/video/audio/document message wotp captured when it arrived.
+
+- **Returns:** `Promise<MediaFile>` — `{ data: ArrayBuffer; contentType: string }`
+- **Throws:** `WotpError` with `statusCode` 404 if the message wasn't media, or if the download failed at receive time
 
 ## Error Handling
 

@@ -3,10 +3,16 @@ package whatsapp
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/wotp/core/internal/store"
 )
 
 func newTestCloudClient(t *testing.T, handler http.HandlerFunc) *CloudClient {
@@ -21,6 +27,17 @@ func newTestCloudClient(t *testing.T, handler http.HandlerFunc) *CloudClient {
 		BaseURL:             srv.URL,
 		HTTPClient:          srv.Client(),
 	})
+}
+
+func newTestProjectStore(t *testing.T) *store.SQLiteProjectStore {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ps, err := store.NewSQLiteProjectStore(filepath.Join(t.TempDir(), "data.db"), logger)
+	if err != nil {
+		t.Fatalf("NewSQLiteProjectStore: %v", err)
+	}
+	t.Cleanup(func() { ps.Close() })
+	return ps
 }
 
 func TestCloudClient_ConnectVerifiesCredentials(t *testing.T) {
@@ -146,7 +163,7 @@ func TestCloudClient_SendMediaRequiresURL(t *testing.T) {
 	client := newTestCloudClient(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("no HTTP call should be made when url and base64Data are both empty")
 	})
-	if _, err := client.SendMedia(context.Background(), "15550100", "", "aGVsbG8=", ""); err == nil {
+	if _, err := client.SendMedia(context.Background(), "15550100", MediaSendOptions{Base64Data: "aGVsbG8="}); err == nil {
 		t.Fatal("expected an error when only base64Data is provided (not supported yet)")
 	}
 }
@@ -160,7 +177,7 @@ func TestCloudClient_SendMediaBuildsImagePayload(t *testing.T) {
 		})
 	})
 
-	result, err := client.SendMedia(context.Background(), "15550100", "https://example.com/pic.jpg", "", "a caption")
+	result, err := client.SendMedia(context.Background(), "15550100", MediaSendOptions{URL: "https://example.com/pic.jpg", Caption: "a caption"})
 	if err != nil {
 		t.Fatalf("SendMedia: %v", err)
 	}
@@ -176,6 +193,57 @@ func TestCloudClient_SendMediaBuildsImagePayload(t *testing.T) {
 	}
 	if image["caption"] != "a caption" {
 		t.Fatalf("image.caption = %v", image["caption"])
+	}
+}
+
+func TestCloudClient_SendLocationBuildsPayload(t *testing.T) {
+	var captured map[string]any
+	client := newTestCloudClient(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&captured)
+		json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]string{{"id": "wamid.location"}},
+		})
+	})
+
+	result, err := client.SendLocation(context.Background(), "15550100", LocationSendOptions{
+		Latitude: 33.5731, Longitude: -7.5898, Name: "Casablanca", Address: "Morocco",
+	})
+	if err != nil {
+		t.Fatalf("SendLocation: %v", err)
+	}
+	if result.MessageID != "wamid.location" {
+		t.Fatalf("MessageID = %q, want wamid.location", result.MessageID)
+	}
+	if captured["type"] != "location" {
+		t.Fatalf("type = %v, want location", captured["type"])
+	}
+	loc, _ := captured["location"].(map[string]any)
+	if loc["latitude"] != 33.5731 || loc["longitude"] != -7.5898 {
+		t.Fatalf("location lat/long = %v/%v, want 33.5731/-7.5898", loc["latitude"], loc["longitude"])
+	}
+	if loc["name"] != "Casablanca" || loc["address"] != "Morocco" {
+		t.Fatalf("location name/address = %v/%v, want Casablanca/Morocco", loc["name"], loc["address"])
+	}
+}
+
+func TestCloudClient_SendLocationOmitsEmptyNameAndAddress(t *testing.T) {
+	var captured map[string]any
+	client := newTestCloudClient(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&captured)
+		json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]string{{"id": "wamid.location"}},
+		})
+	})
+
+	if _, err := client.SendLocation(context.Background(), "15550100", LocationSendOptions{Latitude: 1, Longitude: 2}); err != nil {
+		t.Fatalf("SendLocation: %v", err)
+	}
+	loc, _ := captured["location"].(map[string]any)
+	if _, ok := loc["name"]; ok {
+		t.Fatalf("expected no name field when unset, got %v", loc["name"])
+	}
+	if _, ok := loc["address"]; ok {
+		t.Fatalf("expected no address field when unset, got %v", loc["address"])
 	}
 }
 
@@ -235,13 +303,86 @@ func TestCloudClient_SendOTPTemplateRequiresConfiguredTemplate(t *testing.T) {
 	}
 }
 
-func TestCloudClient_SetPresenceAndGetChatsAreUnsupported(t *testing.T) {
+func TestCloudClient_SetPresenceAndGetChatsRequireAStore(t *testing.T) {
 	client := NewCloudClient(CloudConfig{PhoneNumberID: "123456", AccessToken: "t"})
 	if err := client.SetPresence(context.Background(), "15550100", PresenceTyping); err == nil {
-		t.Fatal("expected SetPresence to return an error on the cloud backend")
+		t.Fatal("expected SetPresence to error when no store is configured")
 	}
 	if _, err := client.GetChats(context.Background()); err == nil {
-		t.Fatal("expected GetChats to return an error on the cloud backend")
+		t.Fatal("expected GetChats to error when no store is configured")
+	}
+}
+
+func TestCloudClient_SetPresenceErrorsWithoutAnInboundMessage(t *testing.T) {
+	ps := newTestProjectStore(t)
+	client := NewCloudClient(CloudConfig{PhoneNumberID: "123456", AccessToken: "t", Store: ps})
+	if err := client.SetPresence(context.Background(), "15550100", PresenceTyping); err == nil {
+		t.Fatal("expected SetPresence to error when this phone has never sent an inbound message")
+	}
+}
+
+func TestCloudClient_SetPresenceSendsTypingIndicatorForLastInboundMessage(t *testing.T) {
+	ps := newTestProjectStore(t)
+	conv, err := ps.GetOrCreateConversation(context.Background(), "15550100")
+	if err != nil {
+		t.Fatalf("GetOrCreateConversation: %v", err)
+	}
+	if err := ps.InsertInboundMessage(context.Background(), &store.InboundMessage{
+		ConversationID: conv.ID, Phone: "15550100", Content: "hi", MessageID: "wamid.IN1", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("InsertInboundMessage: %v", err)
+	}
+
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&captured)
+		w.Write([]byte("{}"))
+	}))
+	t.Cleanup(srv.Close)
+	client := NewCloudClient(CloudConfig{
+		PhoneNumberID: "123456", AccessToken: "t", Store: ps,
+		BaseURL: srv.URL, HTTPClient: srv.Client(),
+	})
+
+	if err := client.SetPresence(context.Background(), "15550100", PresenceTyping); err != nil {
+		t.Fatalf("SetPresence: %v", err)
+	}
+	if captured["message_id"] != "wamid.IN1" {
+		t.Fatalf("message_id = %v, want wamid.IN1 (the last inbound message)", captured["message_id"])
+	}
+	if captured["status"] != "read" {
+		t.Fatalf("status = %v, want read", captured["status"])
+	}
+	typing, _ := captured["typing_indicator"].(map[string]any)
+	if typing["type"] != "text" {
+		t.Fatalf("typing_indicator.type = %v, want text", typing["type"])
+	}
+
+	// state=paused marks the message read without showing a typing
+	// indicator — there's no explicit "stop typing" call on Cloud API,
+	// it just naturally isn't shown when this field is omitted.
+	captured = nil
+	if err := client.SetPresence(context.Background(), "15550100", PresencePaused); err != nil {
+		t.Fatalf("SetPresence (paused): %v", err)
+	}
+	if _, ok := captured["typing_indicator"]; ok {
+		t.Fatalf("expected no typing_indicator field for state=paused, got %v", captured["typing_indicator"])
+	}
+}
+
+func TestCloudClient_GetChatsListsConversations(t *testing.T) {
+	ps := newTestProjectStore(t)
+	if _, err := ps.GetOrCreateConversation(context.Background(), "212600000000"); err != nil {
+		t.Fatalf("GetOrCreateConversation: %v", err)
+	}
+
+	client := NewCloudClient(CloudConfig{PhoneNumberID: "123456", AccessToken: "t", Store: ps})
+	chats, err := client.GetChats(context.Background())
+	if err != nil {
+		t.Fatalf("GetChats: %v", err)
+	}
+	if len(chats) != 1 || chats[0].JID != "212600000000@s.whatsapp.net" {
+		t.Fatalf("GetChats = %+v, want [212600000000@s.whatsapp.net]", chats)
 	}
 }
 

@@ -35,16 +35,10 @@ type Event struct {
 	Error     string `json:"error,omitempty"`
 	At        string `json:"at"`
 
-	// From is the JID of the project's number that produced this event —
-	// populated for WhatsApp-originated events (message.*, session.*) on
-	// projects with more than one number, so a dashboard can show which
-	// number handled a given send. Mirrors whatsapp.Event.From.
+	// From is the JID of the number that produced this event — populated
+	// for WhatsApp-originated events (message.*, session.*). Mirrors
+	// whatsapp.Event.From.
 	From string `json:"from,omitempty"`
-
-	// ProjectID scopes this event to a single project's dashboard clients
-	// (see conn.ProjectID). Left empty for instance-wide events, which are
-	// broadcast to every connected client regardless of project.
-	ProjectID string `json:"project_id,omitempty"`
 
 	// Extended fields for dashboard
 	MsgType    string      `json:"msgType,omitempty"`
@@ -66,9 +60,8 @@ type Hub struct {
 }
 
 type conn struct {
-	ws        *websocket.Conn
-	send      chan []byte
-	projectID string // "" means this client only sees instance-wide events
+	ws   *websocket.Conn
+	send chan []byte
 }
 
 // NewHub creates and starts a new WebSocket hub.
@@ -110,9 +103,6 @@ func (h *Hub) run() {
 			}
 			h.mu.Lock()
 			for c := range h.clients {
-				if evt.ProjectID != "" && c.projectID != evt.ProjectID {
-					continue
-				}
 				select {
 				case c.send <- data:
 				default:
@@ -138,10 +128,8 @@ func (h *Hub) Broadcast(evt Event) {
 	}
 }
 
-// HandleWS is the HTTP handler for WebSocket upgrade requests. projectID
-// scopes which broadcasts this client receives — pass "" for a client that
-// should only see instance-wide events.
-func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request, projectID string) {
+// HandleWS is the HTTP handler for WebSocket upgrade requests.
+func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	wsConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.logger.Error("ws upgrade failed", "error", err)
@@ -149,9 +137,8 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request, projectID string)
 	}
 
 	c := &conn{
-		ws:        wsConn,
-		send:      make(chan []byte, 64),
-		projectID: projectID,
+		ws:   wsConn,
+		send: make(chan []byte, 64),
 	}
 
 	h.register <- c

@@ -5,8 +5,7 @@ import {
   Navigate,
   NavLink,
 } from "react-router-dom";
-import { useEffect, useCallback, useRef, useState } from "react";
-import { ChevronsUpDown, Check } from "lucide-react";
+import { useEffect, useCallback } from "react";
 import { useStore } from "./store";
 import { useWebSocket } from "./hooks/useWebSocket";
 import type { WsEvent, WaNumber, CloudStatus } from "./types";
@@ -17,6 +16,7 @@ import logoLight from "./assets/logo_light.svg";
 // Screens
 import OverviewScreen from "./screens/OverviewScreen";
 import NumbersScreen from "./screens/NumbersScreen";
+import ScanScreen from "./screens/ScanScreen";
 import ActivityScreen from "./screens/ActivityScreen";
 import WebhooksScreen from "./screens/WebhooksScreen";
 import LogsScreen from "./screens/LogsScreen";
@@ -77,81 +77,6 @@ const WebhookIcon = () => (
   </svg>
 );
 
-function ProjectSwitcher() {
-  const projects = useStore((state) => state.projects);
-  const selectedProjectId = useStore((state) => state.selectedProjectId);
-  const selectProject = useStore((state) => state.selectProject);
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
-  if (projects.length === 0) return null;
-
-  const selected = projects.find((p) => p.id === selectedProjectId);
-
-  return (
-    <div className="px-6 pb-4">
-      <label className="text-xs text-muted-foreground mb-1 block">Project</label>
-      <div ref={rootRef} className="relative">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          className="w-full flex items-center justify-between gap-2 text-sm bg-muted border rounded-md px-2.5 py-1.5 text-foreground hover:bg-muted/70 transition-colors"
-        >
-          <span className="truncate">{selected?.name ?? "Select a project"}</span>
-          <ChevronsUpDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-        </button>
-
-        {open && (
-          <div
-            role="listbox"
-            className="absolute left-0 right-0 top-[calc(100%+4px)] z-50 max-h-64 overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-lg py-1"
-          >
-            {projects.map((p) => {
-              const isSelected = p.id === selectedProjectId;
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  role="option"
-                  aria-selected={isSelected}
-                  onClick={() => {
-                    selectProject(p.id);
-                    setOpen(false);
-                  }}
-                  className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 text-sm text-left transition-colors ${
-                    isSelected ? "text-primary" : "text-foreground hover:bg-muted"
-                  }`}
-                >
-                  <span className="truncate">{p.name}</span>
-                  {isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 const LogsIcon = () => (
   <svg
     viewBox="0 0 24 24"
@@ -209,12 +134,10 @@ function Sidebar() {
         </span>
       </div>
 
-      <ProjectSwitcher />
-
       {/* Grouped by what an operator is checking, not one tab per API
           resource — Numbers/Webhooks are the infra you administer, Activity
           is what went out, Logs is raw diagnostics. */}
-      <nav className="flex flex-col px-4">
+      <nav className="flex flex-col px-4 pt-4">
         <NavSection>
           <NavItem to="/overview" icon={<OverviewIcon />} label="Overview" />
         </NavSection>
@@ -240,7 +163,7 @@ function Sidebar() {
   );
 }
 
-// Reflects whichever backend is actually carrying this project's OTP
+// Reflects whichever backend is actually carrying this instance's OTP
 // traffic — whatsmeow (a paired, connected number) or Cloud API (enabled
 // and verified) — rather than a single stale "engine" light that only ever
 // knew about whatsmeow. See the Numbers screen for the per-backend detail.
@@ -263,9 +186,6 @@ function ConnectionIndicator() {
 
 function Layout() {
   const theme = useStore((state) => state.theme);
-  const projects = useStore((state) => state.projects);
-  const selectedProjectId = useStore((state) => state.selectedProjectId);
-  const setProjects = useStore((state) => state.setProjects);
   const setConnectionStatus = useStore((state) => state.setConnectionStatus);
   const setCloudEnabled = useStore((state) => state.setCloudEnabled);
   const setMessages = useStore((state) => state.setMessages);
@@ -281,49 +201,29 @@ function Layout() {
     }
   }, [theme]);
 
-  // Projects list is fetched once; the store picks/keeps a selection.
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const res = await fetch("/dashboard/api/projects");
-        if (res.ok && mounted) setProjects(await res.json());
-      } catch {}
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, [setProjects]);
-
   const fetchHistory = useCallback(async () => {
-    if (!selectedProjectId) return;
-    const qs = `?project_id=${encodeURIComponent(selectedProjectId)}`;
     try {
-      const res = await fetch(`/dashboard/api/messages${qs}`);
+      const res = await fetch("/dashboard/api/messages");
       if (res.ok) {
         setMessages(await res.json());
       }
     } catch {}
     try {
-      const res = await fetch(`/dashboard/api/generic-messages${qs}`);
+      const res = await fetch("/dashboard/api/generic-messages");
       if (res.ok) {
         useStore.getState().setGenericMessages(await res.json());
       }
     } catch {}
     try {
-      const res = await fetch(`/dashboard/api/webhooks${qs}`);
+      const res = await fetch("/dashboard/api/webhooks");
       if (res.ok) {
         useStore.getState().setWebhookEvents(await res.json());
       }
     } catch {}
-  }, [selectedProjectId, setMessages]);
-
-  const wsUrl = selectedProjectId
-    ? `/v1/ws/events?project_id=${encodeURIComponent(selectedProjectId)}`
-    : "/v1/ws/events";
+  }, [setMessages]);
 
   const { status: wsStatus } = useWebSocket({
-    url: wsUrl,
+    url: "/v1/ws/events",
     onMessage: (data: unknown) => {
       const event = data as WsEvent;
       if (event && event.type) {
@@ -343,22 +243,18 @@ function Layout() {
     setWsStatus(wsStatus);
   }, [wsStatus, setWsStatus]);
 
-  // A project is "connected" if EITHER backend can actually send: its
-  // whatsmeow number is connected, or its Cloud API backend is enabled and
+  // The instance is "connected" if EITHER backend can actually send: the
+  // whatsmeow number is connected, or the Cloud API backend is enabled and
   // verified. Checking only whatsmeow.Pool.Numbers() (as before) would trap
-  // a Cloud-only project on the QR pairing screen forever, since Cloud API
+  // a Cloud-only instance on the QR pairing screen forever, since Cloud API
   // has no QR to scan.
   useEffect(() => {
-    if (!selectedProjectId) return;
-
     const checkConnection = async () => {
       let waConnected = false;
       let cloudOk = false;
       let cloudEnabled = false;
       try {
-        const res = await fetch(
-          `/dashboard/api/numbers?project_id=${encodeURIComponent(selectedProjectId)}`,
-        );
+        const res = await fetch("/dashboard/api/numbers");
         if (res.ok) {
           const numbers: WaNumber[] = await res.json();
           waConnected = numbers.some((n) => n.connected);
@@ -367,9 +263,7 @@ function Layout() {
         // API not available yet
       }
       try {
-        const res = await fetch(
-          `/dashboard/api/cloud-status?project_id=${encodeURIComponent(selectedProjectId)}`,
-        );
+        const res = await fetch("/dashboard/api/cloud-status");
         if (res.ok) {
           const status: CloudStatus = await res.json();
           cloudEnabled = status.enabled;
@@ -386,22 +280,14 @@ function Layout() {
     fetchHistory();
     const interval = setInterval(checkConnection, 30000);
     return () => clearInterval(interval);
-  }, [selectedProjectId, setConnectionStatus, setCloudEnabled, fetchHistory]);
-
-  if (projects.length === 0) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center text-muted-foreground">
-        Loading projects…
-      </div>
-    );
-  }
+  }, [setConnectionStatus, setCloudEnabled, fetchHistory]);
 
   // Navigation is always available, regardless of connection state — a
-  // fresh or disconnected project no longer forces a full-page whatsmeow QR
+  // fresh or disconnected instance no longer forces a full-page whatsmeow QR
   // takeover (see the removed QRScreen). That screen assumed whatsmeow was
   // the only way to get started; now Cloud API is an equally valid choice,
-  // and railroading every new project into scanning a QR made it impossible
-  // to reach the Numbers screen's own "configure Cloud API instead" path.
+  // and railroading first boot into scanning a QR made it impossible to
+  // reach the Numbers screen's own "configure Cloud API instead" path.
   // Overview's status cards + the alert banner communicate what's missing;
   // Numbers is where you actually act on it (pair a number or enable Cloud).
   return (
@@ -412,6 +298,7 @@ function Layout() {
           <Route path="/" element={<Navigate to="/overview" replace />} />
           <Route path="/overview" element={<OverviewScreen />} />
           <Route path="/numbers" element={<NumbersScreen />} />
+          <Route path="/numbers/scan" element={<ScanScreen />} />
           <Route path="/activity" element={<ActivityScreen />} />
           <Route path="/webhooks" element={<WebhooksScreen />} />
           <Route path="/logs" element={<LogsScreen />} />

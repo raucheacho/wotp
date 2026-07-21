@@ -344,6 +344,205 @@ func TestGetChats_Success(t *testing.T) {
 	}
 }
 
+func TestSendMedia_DefaultsToImageKind(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body SendMediaRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if body.Kind != MediaKindImage {
+			t.Errorf("expected Kind %q (default), got %q", MediaKindImage, body.Kind)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"message_id": "msg_media"})
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, WithApiKey("test-key"))
+	resp, err := client.SendMedia(context.Background(), "+212600000000", SendMediaRequest{URL: "https://example.com/a.jpg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.MessageID != "msg_media" {
+		t.Errorf("expected msg_media, got %q", resp.MessageID)
+	}
+}
+
+func TestSendMedia_ExplicitDocumentKindAndFilename(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body SendMediaRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if body.Kind != MediaKindDocument {
+			t.Errorf("expected Kind %q, got %q", MediaKindDocument, body.Kind)
+		}
+		if body.Filename != "invoice.pdf" {
+			t.Errorf("expected filename invoice.pdf, got %q", body.Filename)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"message_id": "msg_doc"})
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, WithApiKey("test-key"))
+	_, err := client.SendMedia(context.Background(), "+212600000000", SendMediaRequest{
+		Kind: MediaKindDocument, URL: "https://example.com/invoice.pdf", Filename: "invoice.pdf",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendLocation_Success(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages/send" {
+			t.Errorf("expected /v1/messages/send, got %s", r.URL.Path)
+		}
+		var body SendLocationRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if body.Type != "location" {
+			t.Errorf("expected type location, got %q", body.Type)
+		}
+		if body.Latitude != 33.5731 || body.Longitude != -7.5898 {
+			t.Errorf("unexpected coordinates: %+v", body)
+		}
+		if body.Name != "Casablanca" {
+			t.Errorf("expected name Casablanca, got %q", body.Name)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"message_id": "msg_loc"})
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, WithApiKey("test-key"))
+	resp, err := client.SendLocation(context.Background(), "+212600000000", 33.5731, -7.5898, &LocationOptions{Name: "Casablanca"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.MessageID != "msg_loc" {
+		t.Errorf("expected msg_loc, got %q", resp.MessageID)
+	}
+}
+
+func TestSendLocation_NilOptions(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"message_id": "msg_loc"})
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, WithApiKey("test-key"))
+	if _, err := client.SendLocation(context.Background(), "+212600000000", 33.5731, -7.5898, nil); err != nil {
+		t.Fatalf("unexpected error with nil opts: %v", err)
+	}
+}
+
+func TestConversations_ListGetMessagesTakeoverResume(t *testing.T) {
+	var lastTakeoverBody ConversationStateChangeRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/conversations":
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "conv-1", "phone": "212600000000", "state": "bot", "created_at": "2026-07-13T10:00:00Z", "updated_at": "2026-07-13T10:00:00Z"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/conversations/conv-1":
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": "conv-1", "phone": "212600000000", "state": "bot", "created_at": "2026-07-13T10:00:00Z", "updated_at": "2026-07-13T10:00:00Z",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/conversations/conv-1/messages":
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"direction": "inbound", "content": "hello", "at": "2026-07-13T10:00:00Z"},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/conversations/conv-1/takeover":
+			_ = json.NewDecoder(r.Body).Decode(&lastTakeoverBody)
+			json.NewEncoder(w).Encode(map[string]string{"state": "human"})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/conversations/conv-1/resume":
+			json.NewEncoder(w).Encode(map[string]string{"state": "bot"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, WithApiKey("test-key"))
+	ctx := context.Background()
+
+	convs, err := client.ListConversations(ctx)
+	if err != nil || len(convs) != 1 || convs[0].ID != "conv-1" {
+		t.Fatalf("ListConversations: %v, %+v", err, convs)
+	}
+
+	conv, err := client.GetConversation(ctx, "conv-1")
+	if err != nil || conv.State != "bot" {
+		t.Fatalf("GetConversation: %v, %+v", err, conv)
+	}
+
+	msgs, err := client.GetConversationMessages(ctx, "conv-1")
+	if err != nil || len(msgs) != 1 || msgs[0].Content != "hello" {
+		t.Fatalf("GetConversationMessages: %v, %+v", err, msgs)
+	}
+
+	if err := client.TakeoverConversation(ctx, "conv-1", &ConversationStateChangeRequest{Actor: "agent-1", Reason: "escalation"}); err != nil {
+		t.Fatalf("TakeoverConversation: %v", err)
+	}
+	if lastTakeoverBody.Actor != "agent-1" || lastTakeoverBody.Reason != "escalation" {
+		t.Fatalf("takeover body not forwarded: %+v", lastTakeoverBody)
+	}
+
+	if err := client.ResumeConversation(ctx, "conv-1", nil); err != nil {
+		t.Fatalf("ResumeConversation with nil opts: %v", err)
+	}
+}
+
+func TestGetMedia_Success(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/media/wamid.IMG1" {
+			t.Errorf("expected /v1/media/wamid.IMG1, got %s", r.URL.Path)
+		}
+		if r.Header.Get("apikey") != "test-key" {
+			t.Errorf("expected apikey header, got %q", r.Header.Get("apikey"))
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write([]byte("fake-jpeg-bytes"))
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, WithApiKey("test-key"))
+	media, err := client.GetMedia(context.Background(), "wamid.IMG1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(media.Data) != "fake-jpeg-bytes" {
+		t.Errorf("unexpected data: %q", media.Data)
+	}
+	if media.ContentType != "image/jpeg" {
+		t.Errorf("expected image/jpeg, got %q", media.ContentType)
+	}
+}
+
+func TestGetMedia_NotFound(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "media not found"})
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, WithApiKey("test-key"))
+	_, err := client.GetMedia(context.Background(), "does-not-exist")
+	if err == nil {
+		t.Fatal("expected an error for a missing media file")
+	}
+	wotpErr, ok := err.(*WotpError)
+	if !ok || wotpErr.StatusCode != 404 {
+		t.Fatalf("expected a WotpError with StatusCode 404, got %T: %v", err, err)
+	}
+}
+
 func TestSetPresence_Success(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages/presence" {

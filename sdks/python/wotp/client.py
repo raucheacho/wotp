@@ -13,7 +13,17 @@ from .errors import (
     RateLimitError,
     WotpError,
 )
-from .types import HealthResponse, SendOTPResponse, VerifyOTPResponse, MessageResponse, Chat
+from .types import (
+    Chat,
+    Conversation,
+    ConversationMessage,
+    HealthResponse,
+    MediaFile,
+    MediaKind,
+    MessageResponse,
+    SendOTPResponse,
+    VerifyOTPResponse,
+)
 
 _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_RETRY_DELAY = 0.5  # seconds
@@ -121,17 +131,64 @@ class WotpClient:
         data = self._request("POST", "/v1/messages/send", json={"phone": phone, "type": "text", "text": text})
         return MessageResponse.model_validate(data)
 
-    def send_media(self, phone: str, url: str | None = None, base64: str | None = None, caption: str | None = None) -> MessageResponse:
-        """Send a media message."""
-        payload = {"phone": phone, "type": "media"}
+    def send_media(
+        self,
+        phone: str,
+        url: str | None = None,
+        base64: str | None = None,
+        caption: str | None = None,
+        kind: MediaKind = "image",
+        filename: str | None = None,
+    ) -> MessageResponse:
+        """Send a media message (image, video, audio, or document).
+
+        Args:
+            phone: E.164 formatted phone number.
+            url: A publicly reachable URL wotp fetches the file from.
+            base64: The file's bytes, base64-encoded (alternative to ``url``).
+            caption: Optional caption (image/video/document only).
+            kind: One of ``"image"``, ``"video"``, ``"audio"``, ``"document"``.
+            filename: Shown as the file name in the recipient's chat. Only
+                meaningful when ``kind`` is ``"document"``.
+        """
+        payload: dict[str, Any] = {"phone": phone, "type": kind}
         if url: payload["url"] = url
         if base64: payload["base64"] = base64
         if caption: payload["caption"] = caption
+        if filename: payload["filename"] = filename
+        data = self._request("POST", "/v1/messages/send", json=payload)
+        return MessageResponse.model_validate(data)
+
+    def send_location(
+        self,
+        phone: str,
+        latitude: float,
+        longitude: float,
+        name: str | None = None,
+        address: str | None = None,
+    ) -> MessageResponse:
+        """Send a WhatsApp location message.
+
+        Args:
+            phone: E.164 formatted phone number.
+            latitude: Required.
+            longitude: Required.
+            name: Optional place name label.
+            address: Optional address label.
+        """
+        payload: dict[str, Any] = {
+            "phone": phone,
+            "type": "location",
+            "latitude": latitude,
+            "longitude": longitude,
+        }
+        if name: payload["name"] = name
+        if address: payload["address"] = address
         data = self._request("POST", "/v1/messages/send", json=payload)
         return MessageResponse.model_validate(data)
 
     def get_chats(self) -> list[Chat]:
-        """List the WhatsApp contacts visible to the project's connected numbers."""
+        """List the WhatsApp contacts visible to the connected number."""
         data = self._request("GET", "/v1/chats")
         return [Chat.model_validate(c) for c in data]
 
@@ -143,6 +200,74 @@ class WotpClient:
             state: ``"typing"`` or ``"paused"``.
         """
         self._request("POST", "/v1/messages/presence", json={"phone": phone, "state": state})
+
+    # ─── Conversations & takeover ───────────────────────────────────
+
+    def list_conversations(self) -> list[Conversation]:
+        """List every tracked conversation (one per contact that has ever messaged in)."""
+        data = self._request("GET", "/v1/conversations")
+        return [Conversation.model_validate(c) for c in data]
+
+    def get_conversation(self, conversation_id: str) -> Conversation:
+        """Fetch a single conversation by id."""
+        data = self._request("GET", f"/v1/conversations/{conversation_id}")
+        return Conversation.model_validate(data)
+
+    def get_conversation_messages(self, conversation_id: str) -> list[ConversationMessage]:
+        """Get the full chronological thread for a conversation — inbound
+        replies, outbound sends, and OTP sends merged together."""
+        data = self._request("GET", f"/v1/conversations/{conversation_id}/messages")
+        return [ConversationMessage.model_validate(m) for m in data]
+
+    def takeover_conversation(
+        self, conversation_id: str, actor: str | None = None, reason: str | None = None
+    ) -> None:
+        """Mark a conversation as human-owned. wotp keeps forwarding
+        ``message.received`` either way — it's up to your own bot logic to
+        read ``conversation_state`` from the webhook payload and stay quiet.
+        """
+        self._set_conversation_state(conversation_id, "takeover", actor, reason)
+
+    def resume_conversation(
+        self, conversation_id: str, actor: str | None = None, reason: str | None = None
+    ) -> None:
+        """Hand a conversation back to the bot."""
+        self._set_conversation_state(conversation_id, "resume", actor, reason)
+
+    def _set_conversation_state(
+        self, conversation_id: str, action: str, actor: str | None, reason: str | None
+    ) -> None:
+        payload: dict[str, Any] = {}
+        if actor: payload["actor"] = actor
+        if reason: payload["reason"] = reason
+        self._request("POST", f"/v1/conversations/{conversation_id}/{action}", json=payload)
+
+    # ─── Inbound media ───────────────────────────────────────────────
+
+    def get_media(self, message_id: str) -> MediaFile:
+        """Download the raw bytes of an inbound media message wotp captured
+        at receive time (see :class:`ConversationMessage`.kind /
+        :data:`MediaKind`). Raises :class:`~wotp.errors.WotpError` with
+        ``status_code`` 404 if the message wasn't a media message, or if the
+        download itself failed when the message arrived.
+        """
+        try:
+            response = self._client.request("GET", f"/v1/media/{message_id}")
+        except httpx.HTTPError as exc:
+            raise WotpError(f"Network error: {exc}") from exc
+
+        if response.is_success:
+            return MediaFile(
+                data=response.content,
+                content_type=response.headers.get("Content-Type", ""),
+            )
+
+        try:
+            error_body = response.json()
+        except Exception:
+            error_body = {}
+        msg = error_body.get("message", response.text)
+        raise WotpError(f"Request failed ({response.status_code}): {msg}", status_code=response.status_code)
 
     # ─── Internal ────────────────────────────────────────────────
 
@@ -206,7 +331,8 @@ class WotpClient:
             # Transient server errors — retry
             if response.status_code in _TRANSIENT_STATUS_CODES:
                 last_error = WotpError(
-                    f"Server error {response.status_code}: {response.text}"
+                    f"Server error {response.status_code}: {response.text}",
+                    status_code=response.status_code,
                 )
                 if attempt < self._max_retries:
                     self._sleep(attempt)
@@ -215,7 +341,7 @@ class WotpClient:
 
             # Unknown error
             msg = error_body.get("message", response.text)
-            raise WotpError(f"Request failed ({response.status_code}): {msg}")
+            raise WotpError(f"Request failed ({response.status_code}): {msg}", status_code=response.status_code)
 
         if last_error is not None:
             raise last_error

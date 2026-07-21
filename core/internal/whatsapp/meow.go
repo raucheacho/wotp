@@ -275,17 +275,29 @@ func (m *MeowClient) handleEvent(rawEvt interface{}) {
 		}
 
 		// Only capture incoming text messages for now or all messages.
-		var text string
+		var text, mediaKind, mediaMimeType string
+		var mediaBytes []byte
 		if evt.Message.GetConversation() != "" {
 			text = evt.Message.GetConversation()
 		} else if evt.Message.GetExtendedTextMessage() != nil {
 			text = evt.Message.GetExtendedTextMessage().GetText()
+		} else if loc := evt.Message.GetLocationMessage(); loc != nil {
+			text = FormatLocationText(loc.GetName(), loc.GetDegreesLatitude(), loc.GetDegreesLongitude())
+		} else {
+			text, mediaKind, mediaMimeType, mediaBytes = extractInboundMedia(context.Background(), m.client, evt.Message)
 		}
-		
+
 		data := map[string]interface{}{
 			"text": text,
 			"pushName": evt.Info.PushName,
 			"sender": evt.Info.Sender.String(),
+		}
+		if mediaKind != "" {
+			data["mediaKind"] = mediaKind
+			data["mediaMimeType"] = mediaMimeType
+			if mediaBytes != nil {
+				data["mediaBytes"] = mediaBytes
+			}
 		}
 
 		m.emitEvent(Event{

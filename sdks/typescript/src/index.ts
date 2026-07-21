@@ -26,6 +26,14 @@ export type {
   Chat,
   PresenceState,
   WotpClientOptions,
+  MediaKind,
+  SendMediaOptions,
+  SendLocationOptions,
+  Conversation,
+  ConversationState,
+  ConversationMessage,
+  ConversationStateChangeOptions,
+  MediaFile,
 } from './types';
 
 import { WotpClient } from './client';

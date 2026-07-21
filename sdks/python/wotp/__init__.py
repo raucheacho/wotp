@@ -16,7 +16,18 @@ from .errors import (
     RateLimitError,
     WotpError,
 )
-from .types import Chat, HealthResponse, MessageResponse, SendOTPResponse, VerifyOTPResponse
+from .types import (
+    Chat,
+    Conversation,
+    ConversationMessage,
+    ConversationState,
+    HealthResponse,
+    MediaFile,
+    MediaKind,
+    MessageResponse,
+    SendOTPResponse,
+    VerifyOTPResponse,
+)
 
 __all__ = [
     "create_client",
@@ -30,6 +41,11 @@ __all__ = [
     "HealthResponse",
     "MessageResponse",
     "Chat",
+    "MediaKind",
+    "MediaFile",
+    "Conversation",
+    "ConversationState",
+    "ConversationMessage",
 ]
 
 from importlib.metadata import PackageNotFoundError, version

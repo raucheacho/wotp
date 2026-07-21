@@ -41,9 +41,8 @@ type VerifyOTPResponse struct {
 }
 
 // HealthResponse is the result of a health check. This is an instance-wide
-// liveness check — it has no notion of a single connected phone number,
-// since one instance can host many projects each with their own numbers.
-// See GetChats or the dashboard for per-project connection state.
+// liveness check — see GetChats or the dashboard for the connected number's
+// own status (an instance is mono-tenant: exactly one WhatsApp number).
 type HealthResponse struct {
 	// Status is "ok" when the instance is up.
 	Status string `json:"status"`
@@ -69,12 +68,46 @@ type SendTextRequest struct {
 	Text  string `json:"text"`
 }
 
+// MediaKind identifies the kind of attachment for SendMedia — wotp supports
+// the same four kinds on both its whatsmeow and Cloud API backends.
+type MediaKind string
+
+const (
+	MediaKindImage    MediaKind = "image"
+	MediaKindVideo    MediaKind = "video"
+	MediaKindAudio    MediaKind = "audio"
+	MediaKindDocument MediaKind = "document"
+)
+
 type SendMediaRequest struct {
-	Phone   string `json:"phone"`
-	Type    string `json:"type"`
-	URL     string `json:"url,omitempty"`
-	Base64  string `json:"base64,omitempty"`
-	Caption string `json:"caption,omitempty"`
+	Phone   string    `json:"phone"`
+	Kind    MediaKind `json:"type"`
+	URL     string    `json:"url,omitempty"`
+	Base64  string    `json:"base64,omitempty"`
+	Caption string    `json:"caption,omitempty"`
+	// Filename is shown as the file name in the recipient's chat. Only
+	// meaningful when Kind is MediaKindDocument.
+	Filename string `json:"filename,omitempty"`
+}
+
+// SendLocationRequest is the payload for a location-type POST
+// /v1/messages/send. Name/Address are optional; Latitude/Longitude are
+// required.
+type SendLocationRequest struct {
+	Phone     string  `json:"phone"`
+	Type      string  `json:"type"`
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Name      string  `json:"name,omitempty"`
+	Address   string  `json:"address,omitempty"`
+}
+
+// LocationOptions are the optional fields for SendLocation — grouped in a
+// struct (rather than two more trailing string params) so a caller sending
+// just coordinates isn't stuck passing "", "" for name/address.
+type LocationOptions struct {
+	Name    string
+	Address string
 }
 
 // MessageResponse is the result of a successful POST /v1/messages/send.
@@ -84,7 +117,7 @@ type MessageResponse struct {
 	MessageID string `json:"message_id,omitempty"`
 }
 
-// Chat is a WhatsApp contact visible to one of the project's connected numbers.
+// Chat is a WhatsApp contact visible to the connected number.
 type Chat struct {
 	JID  string `json:"jid"`
 	Name string `json:"name,omitempty"`
@@ -100,4 +133,60 @@ const (
 type SetPresenceRequest struct {
 	Phone string `json:"phone"`
 	State string `json:"state"`
+}
+
+// ─── Conversations & takeover ─────────────────────────────────────
+
+// Conversation states.
+const (
+	ConversationStateBot   = "bot"
+	ConversationStateHuman = "human"
+)
+
+// Conversation is a contact's WhatsApp conversation thread — one per phone
+// number, created automatically on first inbound contact. State is "bot"
+// (default) until a human takes it over.
+type Conversation struct {
+	ID        string    `json:"id"`
+	Phone     string    `json:"phone"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ConversationMessage is one entry in GetConversationMessages' merged,
+// chronological thread — inbound replies, outbound sends, and OTP sends all
+// show up here. Kind is "otp"/"text"/"media" for outbound entries, or an
+// inbound media message's kind ("image"/"video"/"audio"/"document"); empty
+// for a plain inbound text/location message.
+type ConversationMessage struct {
+	Direction string `json:"direction"`
+	Kind      string `json:"kind,omitempty"`
+	Content   string `json:"content"`
+	PushName  string `json:"push_name,omitempty"`
+	// MediaMimeType is set alongside Kind for an inbound media message —
+	// see GetMedia to fetch the actual bytes.
+	MediaMimeType string    `json:"media_mime_type,omitempty"`
+	MessageID     string    `json:"message_id,omitempty"`
+	Status        string    `json:"status,omitempty"`
+	At            time.Time `json:"at"`
+}
+
+// ConversationStateChangeRequest is the optional payload for
+// TakeoverConversation/ResumeConversation — both fields are freeform and
+// optional, but recording them is what makes a takeover auditable instead
+// of a silent state flip.
+type ConversationStateChangeRequest struct {
+	Actor  string `json:"actor,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// ─── Inbound media ─────────────────────────────────────────────────
+
+// MediaFile is the raw bytes of a downloaded inbound media message — an
+// image, video, voice note, or document a contact sent in, ready to feed to
+// OCR, Whisper, or wherever else your bot needs it.
+type MediaFile struct {
+	Data        []byte
+	ContentType string
 }

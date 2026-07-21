@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -301,13 +302,34 @@ func (c *Client) SendText(ctx context.Context, phone, text string) (*MessageResp
 	return &resp, nil
 }
 
-// SendMedia sends a media message.
+// SendMedia sends a media message (image, video, audio, or document — see
+// MediaKind). Kind defaults to MediaKindImage when left unset, matching the
+// API's legacy "media" alias.
 func (c *Client) SendMedia(ctx context.Context, phone string, media SendMediaRequest) (*MessageResponse, error) {
 	media.Phone = phone
-	media.Type = "media"
+	if media.Kind == "" {
+		media.Kind = MediaKindImage
+	}
 	var resp MessageResponse
 
 	if err := c.doRequest(ctx, http.MethodPost, "/v1/messages/send", media, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+// SendLocation sends a WhatsApp location message. opts may be nil if
+// neither a name nor an address label is needed.
+func (c *Client) SendLocation(ctx context.Context, phone string, latitude, longitude float64, opts *LocationOptions) (*MessageResponse, error) {
+	body := SendLocationRequest{Phone: phone, Type: "location", Latitude: latitude, Longitude: longitude}
+	if opts != nil {
+		body.Name = opts.Name
+		body.Address = opts.Address
+	}
+	var resp MessageResponse
+
+	if err := c.doRequest(ctx, http.MethodPost, "/v1/messages/send", body, &resp); err != nil {
 		return nil, err
 	}
 
@@ -331,4 +353,102 @@ func (c *Client) SetPresence(ctx context.Context, phone, state string) error {
 		OK bool `json:"ok"`
 	}
 	return c.doRequest(ctx, http.MethodPost, "/v1/messages/presence", body, &resp)
+}
+
+// ─── Conversations & takeover ─────────────────────────────────────
+
+// ListConversations lists every tracked conversation (one per contact that
+// has ever messaged in).
+func (c *Client) ListConversations(ctx context.Context) ([]Conversation, error) {
+	var resp []Conversation
+	if err := c.doRequest(ctx, http.MethodGet, "/v1/conversations", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// GetConversation fetches a single conversation by id.
+func (c *Client) GetConversation(ctx context.Context, id string) (*Conversation, error) {
+	var resp Conversation
+	if err := c.doRequest(ctx, http.MethodGet, "/v1/conversations/"+url.PathEscape(id), nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// GetConversationMessages returns the full chronological thread for a
+// conversation — inbound replies, outbound sends, and OTP sends merged
+// together.
+func (c *Client) GetConversationMessages(ctx context.Context, id string) ([]ConversationMessage, error) {
+	var resp []ConversationMessage
+	if err := c.doRequest(ctx, http.MethodGet, "/v1/conversations/"+url.PathEscape(id)+"/messages", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// TakeoverConversation marks a conversation as human-owned. wotp keeps
+// forwarding message.received either way — it's up to your own bot logic
+// to read conversation_state from the webhook payload and stay quiet.
+// opts may be nil.
+func (c *Client) TakeoverConversation(ctx context.Context, id string, opts *ConversationStateChangeRequest) error {
+	return c.setConversationState(ctx, id, "takeover", opts)
+}
+
+// ResumeConversation hands a conversation back to the bot. opts may be nil.
+func (c *Client) ResumeConversation(ctx context.Context, id string, opts *ConversationStateChangeRequest) error {
+	return c.setConversationState(ctx, id, "resume", opts)
+}
+
+func (c *Client) setConversationState(ctx context.Context, id, action string, opts *ConversationStateChangeRequest) error {
+	var body ConversationStateChangeRequest
+	if opts != nil {
+		body = *opts
+	}
+	var resp struct {
+		State string `json:"state"`
+	}
+	return c.doRequest(ctx, http.MethodPost, "/v1/conversations/"+url.PathEscape(id)+"/"+action, body, &resp)
+}
+
+// ─── Inbound media ─────────────────────────────────────────────────
+
+// GetMedia downloads the raw bytes of an inbound media message wotp
+// captured at receive time (see ConversationMessage.Kind /
+// SendMedia/MediaKind). Returns a WotpError with StatusCode 404 if the
+// message wasn't a media message, or if the download itself failed when
+// the message arrived.
+func (c *Client) GetMedia(ctx context.Context, messageID string) (*MediaFile, error) {
+	reqURL := c.baseURL + "/v1/media/" + url.PathEscape(messageID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, &WotpError{Message: fmt.Sprintf("failed to create request: %v", err)}
+	}
+	if c.apiKey != "" {
+		req.Header.Set("apikey", c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, &WotpError{Message: fmt.Sprintf("network error: %v", err)}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &WotpError{Message: fmt.Sprintf("failed to read response: %v", err)}
+	}
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return &MediaFile{Data: body, ContentType: resp.Header.Get("Content-Type")}, nil
+	}
+
+	var apiErr apiErrorResponse
+	_ = json.Unmarshal(body, &apiErr)
+	msg := apiErr.Message
+	if msg == "" {
+		msg = string(body)
+	}
+	return nil, &WotpError{StatusCode: resp.StatusCode, Message: msg}
 }

@@ -9,11 +9,13 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/wotp/core/dashboard"
 	"github.com/wotp/core/internal/config"
@@ -25,40 +27,35 @@ import (
 	"github.com/wotp/core/internal/ws"
 )
 
-// ctxKey namespaces values stored on the request context by authMiddleware.
-type ctxKey int
-
-const (
-	ctxKeyRuntime ctxKey = iota
-	ctxKeyTier
-)
-
-// runtimeFromContext returns the project.Runtime resolved by authMiddleware
-// for anon/service-tier requests. nil for root-tier requests, which aren't
-// scoped to a single project.
-func runtimeFromContext(ctx context.Context) *project.Runtime {
-	rt, _ := ctx.Value(ctxKeyRuntime).(*project.Runtime)
-	return rt
-}
-
-// Server holds all dependencies for the API server. Per-project state
-// (store, OTP engine, WhatsApp pool, templates, webhooks, rate limiting)
-// lives on project.Runtime instead, resolved per-request via the registry.
+// Server holds all dependencies for the API server. wotp-core is
+// mono-tenant: all per-instance state (store, OTP engine, WhatsApp pool,
+// templates, webhooks, rate limiting) lives on the single project.Runtime
+// held in rt, swapped in place by reloadRuntime when settings change.
 type Server struct {
 	config    *config.Config
 	control   store.ControlStore
-	registry  *project.Registry
 	keyMgr    *keys.Manager
 	wsHub     *ws.Hub
 	logger    *slog.Logger
 	startTime time.Time
+
+	// reload rebuilds the Runtime from current settings — set once at
+	// startup by main.go (it closes over dataDir/templatesPath, which the
+	// API layer has no other reason to know about).
+	reload func(ctx context.Context) (*project.Runtime, error)
+
+	rtMu sync.RWMutex
+	rt   *project.Runtime
 }
 
-// NewServer creates a new API server with all dependencies.
+// NewServer creates a new API server with all dependencies. rt is the
+// instance's initial Runtime (already loaded by the caller); reload rebuilds
+// it from scratch after a settings change (see Server.reloadRuntime).
 func NewServer(
 	cfg *config.Config,
 	control store.ControlStore,
-	registry *project.Registry,
+	rt *project.Runtime,
+	reload func(ctx context.Context) (*project.Runtime, error),
 	keyMgr *keys.Manager,
 	wsHub *ws.Hub,
 	logger *slog.Logger,
@@ -66,12 +63,47 @@ func NewServer(
 	return &Server{
 		config:    cfg,
 		control:   control,
-		registry:  registry,
+		rt:        rt,
+		reload:    reload,
 		keyMgr:    keyMgr,
 		wsHub:     wsHub,
 		logger:    logger,
 		startTime: time.Now(),
 	}
+}
+
+// runtime returns the current Runtime. Safe for concurrent use with
+// reloadRuntime.
+func (s *Server) runtime() *project.Runtime {
+	s.rtMu.RLock()
+	defer s.rtMu.RUnlock()
+	return s.rt
+}
+
+// reloadRuntime rebuilds the Runtime (via s.reload) and swaps it in,
+// closing the old one. Call after any change to persisted settings so it
+// takes effect immediately, without a process restart — e.g. after editing
+// the Cloud API config from the dashboard.
+//
+// The old Runtime's WhatsApp event channel is left open (Pool.Disconnect
+// doesn't close it) — StartEventForwarder's goroutine for it just parks
+// forever on an empty channel. Harmless (settings changes are rare, the
+// leaked goroutine costs nothing but its stack) and far simpler than
+// plumbing a cancellation signal through for this one case.
+func (s *Server) reloadRuntime(ctx context.Context) (*project.Runtime, error) {
+	newRt, err := s.reload(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	s.rtMu.Lock()
+	old := s.rt
+	s.rt = newRt
+	s.rtMu.Unlock()
+
+	old.Close()
+	go s.StartEventForwarder(newRt)
+	return newRt, nil
 }
 
 // Router builds and returns the chi router with all routes and middleware.
@@ -94,15 +126,20 @@ func (s *Server) Router() *chi.Mux {
 	// Public endpoints
 	r.Get("/v1/health", s.handleHealth)
 
-	// WebSocket for real-time events. Optionally scoped to a project via
-	// ?apikey=... (browsers can't set custom headers on a WS handshake).
+	// WebSocket for real-time events — one instance, every connected client
+	// sees every event.
 	r.Get("/v1/ws/events", s.handleWebSocket)
 
+	// Meta Cloud API inbound webhook — unauthenticated by necessity (Meta
+	// can't send an apikey header); authenticity comes from VerifyToken on
+	// the GET handshake and the X-Hub-Signature-256/AppSecret check on
+	// every POST. See meta_webhook.go.
+	r.Get("/webhooks/meta", s.handleMetaWebhookVerify)
+	r.Post("/webhooks/meta", s.handleMetaWebhookEvents)
+
 	// Dashboard — unauthenticated, "local-only by default" trust model (see
-	// README security section). Requests are scoped by a project_id query
-	// parameter rather than an apikey.
+	// README security section).
 	if s.config.API.EnableDashboard {
-		r.Get("/dashboard/api/projects", s.handleDashboardProjects)
 		r.Get("/dashboard/api/messages", s.handleDashboardMessages)
 		r.Get("/dashboard/api/generic-messages", s.handleDashboardGenericMessages)
 		r.Get("/dashboard/api/webhooks", s.handleDashboardWebhooks)
@@ -145,7 +182,7 @@ func (s *Server) Router() *chi.Mux {
 		}
 	}
 
-	// Project-scoped endpoints (anon or service key)
+	// Client-facing endpoints (anon or service key)
 	r.Group(func(r chi.Router) {
 		r.Use(s.authMiddleware(keys.TierAnon, keys.TierService))
 		r.Post("/v1/otp/send", s.handleOTPSend)
@@ -154,22 +191,25 @@ func (s *Server) Router() *chi.Mux {
 		r.Post("/v1/messages/presence", s.handlePresence)
 		r.Get("/v1/messages", s.handleGetMessages)
 		r.Get("/v1/chats", s.handleChats)
+		r.Get("/v1/conversations", s.handleListConversations)
+		r.Get("/v1/conversations/{id}", s.handleGetConversation)
+		r.Get("/v1/conversations/{id}/messages", s.handleGetConversationMessages)
+		r.Post("/v1/conversations/{id}/takeover", s.handleTakeoverConversation)
+		r.Post("/v1/conversations/{id}/resume", s.handleResumeConversation)
+		r.Get("/v1/media/{message_id}", s.handleGetMedia)
 	})
 
-	// Instance-admin endpoints (root key only) — project lifecycle and
-	// number pairing, not scoped to any single project.
+	// Instance admin endpoints (service key only) — number pairing, key
+	// rotation, settings.
 	r.Group(func(r chi.Router) {
-		r.Use(s.authMiddleware(keys.TierRoot))
-		r.Post("/v1/projects", s.handleCreateProject)
-		r.Get("/v1/projects", s.handleListProjects)
-		r.Delete("/v1/projects/{id}", s.handleDeleteProject)
-		r.Post("/v1/projects/{id}/numbers/pair", s.handlePairNumber)
-		r.Get("/v1/projects/{id}/numbers", s.handleListNumbers)
-		r.Get("/v1/projects/{id}/numbers/qr", s.handleNumberQR)
-		r.Get("/v1/projects/{id}/cloud-status", s.handleCloudStatus)
-		r.Post("/v1/projects/{id}/keys/regenerate", s.handleRegenerateProjectKey)
-		r.Get("/v1/projects/{id}/settings", s.handleGetProjectSettings)
-		r.Patch("/v1/projects/{id}/settings", s.handleUpdateProjectSettings)
+		r.Use(s.authMiddleware(keys.TierService))
+		r.Post("/v1/numbers/pair", s.handleNumbersPair)
+		r.Get("/v1/numbers", s.handleNumbersList)
+		r.Get("/v1/numbers/qr", s.handleNumbersQR)
+		r.Get("/v1/cloud-status", s.handleCloudStatusAPI)
+		r.Post("/v1/keys/regenerate", s.handleRegenerateKey)
+		r.Get("/v1/settings", s.handleGetSettings)
+		r.Patch("/v1/settings", s.handleUpdateSettings)
 	})
 
 	return r
@@ -191,56 +231,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// project_id is trusted directly here (unauthenticated dashboard, same
-	// trust model as the /dashboard/api/* routes); apikey is for external
-	// API consumers, who can't set custom headers on a WS handshake.
-	projectID := r.URL.Query().Get("project_id")
-	if projectID == "" {
-		if apiKey := r.URL.Query().Get("apikey"); apiKey != "" {
-			if pid, _, err := s.keyMgr.Validate(r.Context(), apiKey); err == nil {
-				projectID = pid
-			}
-		}
-	}
-	s.wsHub.HandleWS(w, r, projectID)
-}
-
-// dashboardRuntime resolves the project.Runtime for a dashboard request from
-// its project_id query parameter, writing an error response and returning
-// false if it's missing or the project can't be loaded.
-func (s *Server) dashboardRuntime(w http.ResponseWriter, r *http.Request) (*project.Runtime, bool) {
-	projectID := r.URL.Query().Get("project_id")
-	if projectID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_id query parameter is required"})
-		return nil, false
-	}
-	rt, err := s.registry.Get(r.Context(), projectID)
-	if err != nil {
-		s.logger.Error("dashboard: failed to load project", "project_id", projectID, "error", err)
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project not found"})
-		return nil, false
-	}
-	return rt, true
-}
-
-func (s *Server) handleDashboardProjects(w http.ResponseWriter, r *http.Request) {
-	projects, err := s.control.ListProjects(r.Context())
-	if err != nil {
-		s.logger.Error("failed to list projects", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list projects"})
-		return
-	}
-	if projects == nil {
-		projects = []store.Project{}
-	}
-	writeJSON(w, http.StatusOK, projects)
+	s.wsHub.HandleWS(w, r)
 }
 
 func (s *Server) handleDashboardMessages(w http.ResponseWriter, r *http.Request) {
-	rt, ok := s.dashboardRuntime(w, r)
-	if !ok {
-		return
-	}
+	rt := s.runtime()
 	otps, err := rt.Store.GetRecentOTPs(r.Context(), 100)
 	if err != nil {
 		s.logger.Error("failed to get recent otps", "error", err)
@@ -254,10 +249,7 @@ func (s *Server) handleDashboardMessages(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleDashboardGenericMessages(w http.ResponseWriter, r *http.Request) {
-	rt, ok := s.dashboardRuntime(w, r)
-	if !ok {
-		return
-	}
+	rt := s.runtime()
 	msgs, err := rt.Store.GetGenericMessages(r.Context(), 100)
 	if err != nil {
 		s.logger.Error("failed to get generic messages", "error", err)
@@ -271,10 +263,7 @@ func (s *Server) handleDashboardGenericMessages(w http.ResponseWriter, r *http.R
 }
 
 func (s *Server) handleDashboardWebhooks(w http.ResponseWriter, r *http.Request) {
-	rt, ok := s.dashboardRuntime(w, r)
-	if !ok {
-		return
-	}
+	rt := s.runtime()
 	logs, err := rt.Store.GetWebhookLogs(r.Context(), 100)
 	if err != nil {
 		s.logger.Error("failed to get webhook logs", "error", err)
@@ -292,48 +281,310 @@ func (s *Server) handleDashboardConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDashboardNumbers(w http.ResponseWriter, r *http.Request) {
-	projectID := r.URL.Query().Get("project_id")
-	if projectID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_id query parameter is required"})
-		return
-	}
-	s.listNumbers(w, r, projectID)
+	s.listNumbers(w, r)
 }
 
 func (s *Server) handleDashboardCloudStatus(w http.ResponseWriter, r *http.Request) {
-	projectID := r.URL.Query().Get("project_id")
-	if projectID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_id query parameter is required"})
-		return
-	}
-	s.cloudStatus(w, r, projectID)
+	s.cloudStatus(w, r)
 }
 
 func (s *Server) handleDashboardUpdateCloudSettings(w http.ResponseWriter, r *http.Request) {
-	projectID := r.URL.Query().Get("project_id")
-	if projectID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_id query parameter is required"})
-		return
-	}
-	s.updateCloudSettings(w, r, projectID)
+	s.updateCloudSettings(w, r)
 }
 
 func (s *Server) handleDashboardPairNumber(w http.ResponseWriter, r *http.Request) {
-	projectID := r.URL.Query().Get("project_id")
-	if projectID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_id query parameter is required"})
-		return
-	}
-	s.startPairing(w, r, projectID)
+	s.startPairing(w, r)
 }
 
 func (s *Server) handleDashboardNumberQR(w http.ResponseWriter, r *http.Request) {
-	projectID := r.URL.Query().Get("project_id")
-	if projectID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project_id query parameter is required"})
+	s.renderQR(w, r)
+}
+
+func (s *Server) handleNumbersPair(w http.ResponseWriter, r *http.Request) {
+	s.startPairing(w, r)
+}
+
+func (s *Server) handleNumbersList(w http.ResponseWriter, r *http.Request) {
+	s.listNumbers(w, r)
+}
+
+func (s *Server) handleNumbersQR(w http.ResponseWriter, r *http.Request) {
+	s.renderQR(w, r)
+}
+
+func (s *Server) handleCloudStatusAPI(w http.ResponseWriter, r *http.Request) {
+	s.cloudStatus(w, r)
+}
+
+// --- Numbers / pairing / Cloud config — shared by the service-tier
+// /v1/numbers*, /v1/cloud-status routes above and the unauthenticated
+// /dashboard/api/* routes, which trust project_id-free requests under the
+// same "local-only by default" model. ---
+
+// startPairing begins pairing a new WhatsApp number and returns
+// immediately; QR codes stream out via Runtime.SetLatestQR (polled through
+// renderQR) and the WS hub (event type "number.qr"). Once pairing finishes
+// (success, timeout, or error), the control-plane numbers registry is
+// synced so a newly linked number is reflected there.
+func (s *Server) startPairing(w http.ResponseWriter, r *http.Request) {
+	rt := s.runtime()
+
+	// Pairing outlives this request by minutes (WhatsApp rotates the QR
+	// roughly every 20s until scanned or it times out) — r.Context() would
+	// get canceled the moment this handler returns, killing the QR-rotation
+	// relay goroutine below after the very first code. Use a background
+	// context bounded by whatsmeow's own pairing timeout instead.
+	pairCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+
+	qrChan, err := rt.WA.Pair(pairCtx)
+	if err != nil {
+		cancel()
+		if errors.Is(err, whatsapp.ErrAlreadyPaired) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		s.logger.Error("failed to start pairing", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to start pairing"})
 		return
 	}
-	s.renderQR(w, r, projectID)
+
+	go func() {
+		defer cancel()
+		for qr := range qrChan {
+			rt.SetLatestQR(qr)
+			s.wsHub.Broadcast(ws.Event{
+				Type:    "number.qr",
+				Payload: qr,
+			})
+		}
+		// The channel only closes once pairing is done one way or another
+		// (success, timeout, error) — clear the QR so renderQR stops serving
+		// a stale/expired code indefinitely (whatsmeow's own codes expire
+		// after ~20-60s, but nothing here was telling callers that).
+		rt.SetLatestQR("")
+		s.wsHub.Broadcast(ws.Event{
+			Type:    "number.qr",
+			Payload: "",
+		})
+
+		syncCtx, syncCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer syncCancel()
+		if err := project.SyncNumbers(syncCtx, s.control, rt.WA); err != nil {
+			s.logger.Error("failed to sync numbers after pairing", "error", err)
+		}
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "pairing_started"})
+}
+
+// listNumbers returns the live state of every number in the WhatsApp pool
+// (not the control-plane numbers table — see startPairing).
+func (s *Server) listNumbers(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.runtime().WA.Numbers())
+}
+
+// CloudStatus reports whether the instance's Cloud API backend (see
+// project.Settings.Cloud) is enabled, and if so whether its credentials
+// have been verified — the dashboard shows this alongside the whatsmeow
+// number, since an instance can use either or both (Cloud for OTP,
+// whatsmeow for everything else).
+type CloudStatus struct {
+	Enabled             bool   `json:"enabled"`
+	Connected           bool   `json:"connected"`
+	PhoneNumberID       string `json:"phone_number_id,omitempty"`
+	DisplayPhone        string `json:"display_phone,omitempty"`
+	OTPTemplateName     string `json:"otp_template_name,omitempty"`
+	OTPTemplateLanguage string `json:"otp_template_language,omitempty"`
+	// WabaID/VerifyToken are not secret — returned as-is so the dashboard
+	// form can round-trip them without the "leave blank to keep" dance
+	// AccessToken/AppSecret/Pin need.
+	WabaID string `json:"waba_id,omitempty"`
+	// VerifyToken is echoed back so the operator can re-copy it into the
+	// Meta app dashboard's webhook subscription form without having to
+	// remember what they set here.
+	VerifyToken string `json:"verify_token,omitempty"`
+	// WebhookURL is this instance's inbound webhook endpoint, for pasting
+	// into Meta's app dashboard — computed from the request, not stored.
+	WebhookURL string `json:"webhook_url,omitempty"`
+	// AccessToken/AppSecret/Pin are deliberately never returned — the
+	// dashboard's edit form leaves them blank and only overwrites when the
+	// operator types a new value (see updateCloudSettings).
+}
+
+// CloudSettingsRequest is the JSON body for the dashboard's Cloud API
+// configuration form — a focused subset of project.Settings.Cloud, so the
+// dashboard (unauthenticated, local-only trust model) can only touch Cloud
+// config through this endpoint, not the rest of the instance's settings.
+type CloudSettingsRequest struct {
+	Enabled             bool   `json:"enabled"`
+	PhoneNumberID       string `json:"phone_number_id"`
+	AccessToken         string `json:"access_token"`
+	OTPTemplateName     string `json:"otp_template_name"`
+	OTPTemplateLanguage string `json:"otp_template_language"`
+	WabaID              string `json:"waba_id"`
+	Pin                 string `json:"pin"`
+	AppSecret           string `json:"app_secret"`
+	VerifyToken         string `json:"verify_token"`
+}
+
+// updateCloudSettings lets the dashboard configure the Cloud API backend
+// without a service key — same trust model as pairing a whatsmeow number
+// from the dashboard already has (unauthenticated, local-only by default).
+func (s *Server) updateCloudSettings(w http.ResponseWriter, r *http.Request) {
+	var req CloudSettingsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	ctx := r.Context()
+	settings := s.runtime().Settings
+
+	settings.Cloud.Enabled = req.Enabled
+	settings.Cloud.PhoneNumberID = req.PhoneNumberID
+	// An empty secret-like field means "keep the existing one" — the
+	// status endpoint never returns these, so the dashboard form can't
+	// round-trip them; only overwrite when the operator actually typed a
+	// new value.
+	if req.AccessToken != "" {
+		settings.Cloud.AccessToken = req.AccessToken
+	}
+	if req.Pin != "" {
+		settings.Cloud.Pin = req.Pin
+	}
+	if req.AppSecret != "" {
+		settings.Cloud.AppSecret = req.AppSecret
+	}
+	settings.Cloud.OTPTemplateName = req.OTPTemplateName
+	settings.Cloud.OTPTemplateLanguage = req.OTPTemplateLanguage
+	settings.Cloud.WabaID = req.WabaID
+	settings.Cloud.VerifyToken = req.VerifyToken
+
+	if err := s.saveSettingsAndReload(ctx, settings); err != nil {
+		s.logger.Error("failed to save cloud settings", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) cloudStatus(w http.ResponseWriter, r *http.Request) {
+	rt := s.runtime()
+	status := CloudStatus{
+		Enabled:     rt.Cloud != nil,
+		WabaID:      rt.Settings.Cloud.WabaID,
+		VerifyToken: rt.Settings.Cloud.VerifyToken,
+		WebhookURL:  webhookURLFromRequest(r),
+	}
+	if rt.Cloud != nil {
+		status.Connected = rt.Cloud.IsConnected()
+		status.PhoneNumberID = rt.Settings.Cloud.PhoneNumberID
+		status.DisplayPhone = rt.Cloud.GetPhoneNumber()
+		status.OTPTemplateName = rt.Settings.Cloud.OTPTemplateName
+		status.OTPTemplateLanguage = rt.Settings.Cloud.OTPTemplateLanguage
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+// webhookURLFromRequest builds the absolute URL of the inbound Meta webhook
+// receiver from the incoming request's own host — so the dashboard can show
+// the exact URL to paste into Meta's app console without wotp needing to
+// know its own public hostname/scheme ahead of time (it's whatever the
+// operator is reaching the dashboard through, which is also what Meta needs
+// to reach, once that's exposed publicly).
+func webhookURLFromRequest(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host + "/webhooks/meta"
+}
+
+func (s *Server) renderQR(w http.ResponseWriter, r *http.Request) {
+	qr := s.runtime().LatestQR()
+	if qr == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no QR code available, waiting for WhatsApp..."})
+		return
+	}
+
+	if r.Header.Get("Accept") == "application/json" {
+		writeJSON(w, http.StatusOK, map[string]string{"qr": qr})
+		return
+	}
+
+	png, err := qrcode.Encode(qr, qrcode.Medium, 512)
+	if err != nil {
+		s.logger.Error("qr encode error", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate QR image"})
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.WriteHeader(http.StatusOK)
+	w.Write(png)
+}
+
+// RegenerateKeyRequest is the JSON body for POST /v1/keys/regenerate.
+type RegenerateKeyRequest struct {
+	Tier string `json:"tier"` // "anon" or "service"
+}
+
+func (s *Server) handleRegenerateKey(w http.ResponseWriter, r *http.Request) {
+	var req RegenerateKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.Tier != keys.TierAnon && req.Tier != keys.TierService) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tier must be \"anon\" or \"service\""})
+		return
+	}
+
+	newKey, err := s.keyMgr.RegenerateAll(r.Context(), req.Tier)
+	if err != nil {
+		s.logger.Error("failed to regenerate key", "tier", req.Tier, "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to regenerate key"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"key": newKey.FullKey, "tier": newKey.Tier})
+}
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.runtime().Settings)
+}
+
+// handleUpdateSettings applies a partial update to the instance's settings:
+// JSON keys present in the request body overwrite the corresponding
+// existing values (encoding/json merges into an existing struct
+// field-by-field), anything omitted is left untouched. The Runtime is
+// reloaded so the new values take effect immediately, without disconnecting
+// an already-paired WhatsApp number (whatsmeow reconnects via
+// Pool.LoadExisting during the reload).
+func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	settings := s.runtime().Settings
+
+	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid settings payload"})
+		return
+	}
+
+	if err := s.saveSettingsAndReload(r.Context(), settings); err != nil {
+		s.logger.Error("failed to save settings", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to save settings"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) saveSettingsAndReload(ctx context.Context, settings project.Settings) error {
+	settingsJSON, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("encode settings: %w", err)
+	}
+	if err := s.control.UpdateSettings(ctx, string(settingsJSON)); err != nil {
+		return fmt.Errorf("save settings: %w", err)
+	}
+	if _, err := s.reloadRuntime(ctx); err != nil {
+		return fmt.Errorf("reload runtime: %w", err)
+	}
+	return nil
 }
 
 // OTPSendRequest is the JSON body for POST /otp/send.
@@ -349,7 +600,7 @@ func (s *Server) handleOTPSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rt := runtimeFromContext(r.Context())
+	rt := s.runtime()
 	ctx := r.Context()
 
 	// Generate OTP
@@ -364,7 +615,7 @@ func (s *Server) handleOTPSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Send via WhatsApp. A Cloud API-backed project must send OTPs through
+	// Send via WhatsApp. A Cloud API-backed instance must send OTPs through
 	// a pre-approved template (see whatsapp.TemplateOTPSender) — it can
 	// never use free text, since an OTP is always the first message in a
 	// conversation and so always outside the 24h window free text needs.
@@ -422,7 +673,7 @@ func (s *Server) handleOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rt := runtimeFromContext(r.Context())
+	rt := s.runtime()
 	ctx := r.Context()
 	result, err := rt.Engine.Verify(ctx, req.Token, req.Code)
 	if err != nil {
@@ -448,10 +699,9 @@ func (s *Server) handleOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Broadcast verification success to this project's dashboard clients
+	// Broadcast verification success to dashboard clients
 	s.wsHub.Broadcast(ws.Event{
 		Type:      "otp.verified",
-		ProjectID: rt.Project.ID,
 		Phone:     result.Phone,
 		MessageID: result.MessageID,
 		At:        time.Now().Format(time.RFC3339),
@@ -479,7 +729,7 @@ func (s *Server) authMiddleware(allowedTiers ...string) func(http.Handler) http.
 				return
 			}
 
-			projectID, tier, err := s.keyMgr.Validate(r.Context(), apiKey)
+			tier, err := s.keyMgr.Validate(r.Context(), apiKey)
 			if err != nil {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid api key"})
 				return
@@ -490,18 +740,7 @@ func (s *Server) authMiddleware(allowedTiers ...string) func(http.Handler) http.
 				return
 			}
 
-			ctx := context.WithValue(r.Context(), ctxKeyTier, tier)
-			if tier != keys.TierRoot {
-				rt, err := s.registry.Get(ctx, projectID)
-				if err != nil {
-					s.logger.Error("failed to load project runtime", "error", err, "project_id", projectID)
-					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "project unavailable"})
-					return
-				}
-				ctx = context.WithValue(ctx, ctxKeyRuntime, rt)
-			}
-
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(w, r)
 		})
 	}
 }
@@ -523,45 +762,85 @@ func (s *Server) loggerMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// StartEventForwarder forwards a single project's WhatsApp events to its
-// webhook dispatcher and to this project's dashboard clients over the WS
-// hub. Registered via project.Registry.SetOnRuntimeLoaded, so it runs once
-// per project, in its own goroutine, from the moment that project's Runtime
-// is first built.
+// StartEventForwarder forwards a Runtime's WhatsApp events — from both the
+// whatsmeow pool and, when configured, the Cloud API client — to its
+// webhook dispatcher and to dashboard clients over the WS hub. Called once
+// at startup for the initial Runtime, and again by reloadRuntime for each
+// replacement.
+//
+// Fans in both event channels rather than ranging over just rt.WA.Events()
+// — before this, anything CloudClient emitted (message.sent/failed on every
+// Cloud-routed send, and eventually inbound/delivery events once Cloud
+// webhooks are wired up) was silently dropped: nothing ever read it.
 func (s *Server) StartEventForwarder(rt *project.Runtime) {
-	for evt := range rt.WA.Events() {
-		rt.Webhooks.ProcessEvent(evt)
+	waEvents := rt.WA.Events()
+	var cloudEvents <-chan whatsapp.Event
+	if rt.Cloud != nil {
+		cloudEvents = rt.Cloud.Events()
+	}
 
-		// Update DB status for OTP and Generic Messages
-		if evt.MessageID != "" {
-			var status string
-			switch evt.Type {
-			case "message.sent":
-				status = string(store.StatusSent)
-			case "message.delivered":
-				status = string(store.StatusDelivered)
-			case "message.read":
-				status = string(store.StatusRead)
-			case "message.failed":
-				status = string(store.StatusFailed)
+	for {
+		var evt whatsapp.Event
+		var ok bool
+		select {
+		case evt, ok = <-waEvents:
+			if !ok {
+				waEvents = nil
+				continue
 			}
-
-			if status != "" {
-				_ = rt.Store.UpdateOTPStatusByMessageID(context.Background(), evt.MessageID, store.OTPStatus(status))
-				_ = rt.Store.UpdateGenericMessageStatus(context.Background(), evt.MessageID, status, evt.Error)
+		case evt, ok = <-cloudEvents:
+			if !ok {
+				cloudEvents = nil
+				continue
 			}
 		}
-
-		s.wsHub.Broadcast(ws.Event{
-			Type:      evt.Type,
-			ProjectID: rt.Project.ID,
-			Phone:     evt.Phone,
-			MessageID: evt.MessageID,
-			Error:     evt.Error,
-			From:      evt.From,
-			At:        evt.At.Format(time.RFC3339),
-		})
+		s.forwardEvent(rt, evt)
 	}
+}
+
+func (s *Server) forwardEvent(rt *project.Runtime, evt whatsapp.Event) {
+	if evt.Type == whatsapp.EventMessageReceived {
+		// Persist the message to its conversation and enrich the event
+		// with conversation_id/conversation_state before forwarding —
+		// wotp always forwards; it's up to the receiving app's own bot
+		// logic to skip replying when the conversation is human-owned.
+		// See routeInboundMessage in conversations.go.
+		enriched, err := routeInboundMessage(context.Background(), rt.Store, rt.MediaDir, evt)
+		if err != nil {
+			s.logger.Error("failed to route inbound message", "phone", evt.Phone, "error", err)
+		}
+		evt = enriched
+	}
+	rt.Webhooks.ProcessEvent(evt)
+
+	// Update DB status for OTP and Generic Messages
+	if evt.MessageID != "" {
+		var status string
+		switch evt.Type {
+		case "message.sent":
+			status = string(store.StatusSent)
+		case "message.delivered":
+			status = string(store.StatusDelivered)
+		case "message.read":
+			status = string(store.StatusRead)
+		case "message.failed":
+			status = string(store.StatusFailed)
+		}
+
+		if status != "" {
+			_ = rt.Store.UpdateOTPStatusByMessageID(context.Background(), evt.MessageID, store.OTPStatus(status))
+			_ = rt.Store.UpdateGenericMessageStatus(context.Background(), evt.MessageID, status, evt.Error)
+		}
+	}
+
+	s.wsHub.Broadcast(ws.Event{
+		Type:      evt.Type,
+		Phone:     evt.Phone,
+		MessageID: evt.MessageID,
+		Error:     evt.Error,
+		From:      evt.From,
+		At:        evt.At.Format(time.RFC3339),
+	})
 }
 
 // ListenAndServe starts the HTTP server on the configured port.

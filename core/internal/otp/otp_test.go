@@ -6,18 +6,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wotp/core/internal/store"
 )
 
 // --- In-memory store for testing ---
 
 type memStore struct {
-	otps map[string]*store.OTPRequest
+	otps          map[string]*store.OTPRequest
+	conversations map[string]*store.Conversation // keyed by normalized phone
 }
 
 func newMemStore() *memStore {
 	return &memStore{
-		otps: make(map[string]*store.OTPRequest),
+		otps:          make(map[string]*store.OTPRequest),
+		conversations: make(map[string]*store.Conversation),
 	}
 }
 
@@ -81,12 +84,74 @@ func (m *memStore) GetRecentOTPs(_ context.Context, limit int) ([]store.OTPReque
 }
 
 func (m *memStore) SaveGenericMessage(_ context.Context, msg *store.GenericMessage) error { return nil }
-func (m *memStore) UpdateGenericMessageStatus(_ context.Context, messageID string, status string, errorMsg string) error { return nil }
-func (m *memStore) GetGenericMessages(_ context.Context, limit int) ([]store.GenericMessage, error) { return nil, nil }
-func (m *memStore) GetGenericMessageByID(_ context.Context, messageID string) (*store.GenericMessage, error) { return nil, nil }
+func (m *memStore) UpdateGenericMessageStatus(_ context.Context, messageID string, status string, errorMsg string) error {
+	return nil
+}
+func (m *memStore) GetGenericMessages(_ context.Context, limit int) ([]store.GenericMessage, error) {
+	return nil, nil
+}
+func (m *memStore) GetGenericMessageByID(_ context.Context, messageID string) (*store.GenericMessage, error) {
+	return nil, nil
+}
 func (m *memStore) SaveWebhookLog(_ context.Context, log *store.WebhookLog) error { return nil }
-func (m *memStore) GetWebhookLogs(_ context.Context, limit int) ([]store.WebhookLog, error) { return nil, nil }
-func (m *memStore) UpdateOTPStatusByMessageID(_ context.Context, messageID string, status store.OTPStatus) error { return nil }
+func (m *memStore) GetWebhookLogs(_ context.Context, limit int) ([]store.WebhookLog, error) {
+	return nil, nil
+}
+func (m *memStore) UpdateOTPStatusByMessageID(_ context.Context, messageID string, status store.OTPStatus) error {
+	return nil
+}
+func (m *memStore) GetGenericMessagesByPhone(_ context.Context, phone string, limit int) ([]store.GenericMessage, error) {
+	return nil, nil
+}
+func (m *memStore) GetOrCreateConversation(_ context.Context, phone string) (*store.Conversation, error) {
+	normalized := store.NormalizePhone(phone)
+	if conv, ok := m.conversations[normalized]; ok {
+		return conv, nil
+	}
+	conv := &store.Conversation{
+		ID:        uuid.New().String(),
+		Phone:     normalized,
+		State:     store.ConversationStateBot,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	m.conversations[normalized] = conv
+	return conv, nil
+}
+
+func (m *memStore) GetOTPRequestsByConversationID(_ context.Context, conversationID string, limit int) ([]store.OTPRequest, error) {
+	var out []store.OTPRequest
+	for _, r := range m.otps {
+		if r.ConversationID == conversationID {
+			out = append(out, *r)
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+func (m *memStore) ListConversations(_ context.Context) ([]store.Conversation, error) {
+	return nil, nil
+}
+func (m *memStore) GetConversationByID(_ context.Context, id string) (*store.Conversation, error) {
+	return nil, nil
+}
+func (m *memStore) SetConversationState(_ context.Context, id, state, actor, reason string) error {
+	return nil
+}
+func (m *memStore) ListConversationStateChanges(_ context.Context, conversationID string) ([]store.ConversationStateChange, error) {
+	return nil, nil
+}
+func (m *memStore) InsertInboundMessage(_ context.Context, msg *store.InboundMessage) error {
+	return nil
+}
+func (m *memStore) ListInboundMessagesByPhone(_ context.Context, phone string, limit int) ([]store.InboundMessage, error) {
+	return nil, nil
+}
+func (m *memStore) GetInboundMessageByMessageID(_ context.Context, messageID string) (*store.InboundMessage, error) {
+	return nil, nil
+}
 
 func (m *memStore) Close() error { return nil }
 
@@ -219,6 +284,47 @@ func TestEngineSendAndVerify(t *testing.T) {
 	}
 	if vr.Phone != "+212600000000" {
 		t.Errorf("expected phone +212600000000, got %q", vr.Phone)
+	}
+}
+
+// TestEngineSend_LinksConversation is a regression test for folding OTP
+// sends into the conversation model: Send must look up (or create) the
+// conversation for the phone number and stamp it on the stored request, so
+// GET /v1/conversations/{id}/messages can surface it.
+func TestEngineSend_LinksConversation(t *testing.T) {
+	ms := newMemStore()
+	engine := NewEngine(ms, EngineConfig{
+		CodeLength:             6,
+		ExpiryMinutes:          5,
+		MaxAttempts:            3,
+		RateLimitPerPhonePerHr: 10,
+	})
+	ctx := context.Background()
+
+	result, err := engine.Send(ctx, "+212600000000")
+	if err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+
+	conv, err := ms.GetOrCreateConversation(ctx, "+212600000000")
+	if err != nil {
+		t.Fatalf("GetOrCreateConversation: %v", err)
+	}
+
+	stored, err := ms.GetOTPRequestByToken(ctx, result.Token)
+	if err != nil {
+		t.Fatalf("GetOTPRequestByToken: %v", err)
+	}
+	if stored.ConversationID != conv.ID {
+		t.Fatalf("stored OTP's ConversationID = %q, want %q (the conversation for this phone)", stored.ConversationID, conv.ID)
+	}
+
+	linked, err := ms.GetOTPRequestsByConversationID(ctx, conv.ID, 10)
+	if err != nil {
+		t.Fatalf("GetOTPRequestsByConversationID: %v", err)
+	}
+	if len(linked) != 1 || linked[0].Token != result.Token {
+		t.Fatalf("GetOTPRequestsByConversationID = %+v, want just the OTP just sent", linked)
 	}
 }
 

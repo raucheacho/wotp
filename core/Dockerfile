@@ -51,9 +51,9 @@ WORKDIR /app
 # Copy the compiled binary
 COPY --from=go-builder /wotp-core /app/wotp-core
 
-# Data directory: control.db (instance-wide) + projects/<id>/{data.db,session.db}
-# (per project) — see core/internal/project/registry.go. A single mount point,
-# since wotp-core now manages its own subdirectory layout underneath /data.
+# Data directory: control.db, data.db, session.db — see
+# core/internal/project.Load. A single mount point; wotp-core writes all
+# three files directly underneath it.
 RUN mkdir -p /data \
     && chown -R wotp:wotp /data /app
 

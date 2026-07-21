@@ -22,9 +22,8 @@ func NewStatusCmd() *cobra.Command {
 	}
 }
 
-// healthResponse matches wotp-core's GET /v1/health response, which is
-// instance-wide (no longer carries a single number's phone/status — see
-// `wotp project keys <slug>` for per-number connection state).
+// healthResponse matches wotp-core's GET /v1/health response — use
+// `wotp keys` plus the dashboard's Numbers screen for connection state.
 type healthResponse struct {
 	Status        string `json:"status"`
 	UptimeSeconds int64  `json:"uptime_seconds"`

@@ -5,6 +5,7 @@ package whatsapp
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -51,6 +52,65 @@ type Chat struct {
 	Name string `json:"name"`
 }
 
+// MediaKind identifies the WhatsApp message type for a media send — it
+// determines both which whatsmeow upload/message type is used and which
+// Cloud API "type" value is sent, so both backends accept and render the
+// same request the same way. "image" is also what a bare/legacy "media"
+// request type maps to (see api.handleMessagesSend's backward-compat
+// alias), so callers written before Kind existed keep working unchanged.
+type MediaKind string
+
+const (
+	MediaKindImage    MediaKind = "image"
+	MediaKindVideo    MediaKind = "video"
+	MediaKindAudio    MediaKind = "audio"
+	MediaKindDocument MediaKind = "document"
+)
+
+// MediaSendOptions bundles a media send's parameters. A struct instead of
+// further positional args — Kind/Filename are only meaningful for some
+// kinds (Filename: document-only; Caption: every kind except audio, which
+// WhatsApp's protocol carries no caption field for at all), and a send
+// call already had four positional string params before this; a fifth or
+// sixth invites exactly the swapped-argument mistakes named args exist to
+// prevent.
+type MediaSendOptions struct {
+	URL        string
+	Base64Data string
+	Caption    string
+	Kind       MediaKind
+	// Filename is shown as the file name in the recipient's chat.
+	// Document-only — ignored for every other kind.
+	Filename string
+}
+
+// LocationSendOptions bundles a location send's parameters — a struct
+// rather than two adjacent float64 positional args, which is exactly the
+// shape most likely to get silently swapped at a call site (see
+// MediaSendOptions' doc comment for the same reasoning).
+type LocationSendOptions struct {
+	Latitude  float64
+	Longitude float64
+	// Name/Address are optional — a bare pin with no label is a valid send.
+	Name    string
+	Address string
+}
+
+// FormatLocationText renders a received location as human-readable text —
+// the place name if the sender's app included one, otherwise the raw
+// coordinates. wotp has no dedicated lat/long storage for inbound messages
+// (InboundMessage.Content is a plain string, same as an outbound location's
+// stored Content — see api.handleMessagesSend) — this is the one place
+// that plain-string content gets produced for an *inbound* location, shared
+// across whatsmeow (pool.go, meow.go) and Cloud (cloud_webhook.go) so both
+// backends render a received pin identically.
+func FormatLocationText(name string, latitude, longitude float64) string {
+	if name != "" {
+		return name
+	}
+	return fmt.Sprintf("%.6f, %.6f", latitude, longitude)
+}
+
 // Client is the interface for WhatsApp operations.
 // Implementations must be safe for concurrent use.
 type Client interface {
@@ -63,7 +123,10 @@ type Client interface {
 	SendMessage(ctx context.Context, phone, message string) (*SendResult, error)
 
 	// SendMedia sends a media message to the given phone number.
-	SendMedia(ctx context.Context, phone, url, base64Data, caption string) (*SendResult, error)
+	SendMedia(ctx context.Context, phone string, opts MediaSendOptions) (*SendResult, error)
+
+	// SendLocation sends a location pin to the given phone number.
+	SendLocation(ctx context.Context, phone string, opts LocationSendOptions) (*SendResult, error)
 
 	// SetPresence sets the chat presence (typing indicator) for the given phone
 	// number without sending a message. state must be "typing" or "paused".

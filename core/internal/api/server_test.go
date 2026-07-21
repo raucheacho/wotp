@@ -3,6 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -21,11 +24,12 @@ import (
 )
 
 type testEnv struct {
-	server  *Server
-	router  http.Handler
-	control store.ControlStore
-	keyMgr  *keys.Manager
-	rootKey string
+	server     *Server
+	router     http.Handler
+	control    store.ControlStore
+	keyMgr     *keys.Manager
+	anonKey    string
+	serviceKey string
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -45,26 +49,42 @@ func newTestEnv(t *testing.T) *testEnv {
 	}
 
 	wsHub := ws.NewHub(logger)
-	registry := project.NewRegistry(control, dir, templatesPath, wsHub, logger)
 	keyMgr := keys.NewManager(control)
+
+	loadOpts := project.LoadOptions{
+		InstanceName:  "Test Instance",
+		DataDir:       dir,
+		TemplatesPath: templatesPath,
+	}
+	reload := func(ctx context.Context) (*project.Runtime, error) {
+		return project.Load(ctx, control, wsHub, logger, loadOpts)
+	}
 
 	cfg := &config.Config{
 		API: config.APIConfig{Port: 54321, EnableDashboard: true},
 	}
-	server := NewServer(cfg, control, registry, keyMgr, wsHub, logger)
-	registry.SetOnRuntimeLoaded(server.StartEventForwarder)
 
-	rootKey, err := keyMgr.EnsureRootKey(context.Background())
+	rt, err := reload(context.Background())
 	if err != nil {
-		t.Fatalf("EnsureRootKey: %v", err)
+		t.Fatalf("Load: %v", err)
+	}
+	t.Cleanup(rt.Close)
+
+	server := NewServer(cfg, control, rt, reload, keyMgr, wsHub, logger)
+	go server.StartEventForwarder(rt)
+
+	anonKey, serviceKey, err := keyMgr.EnsureKeys(context.Background())
+	if err != nil {
+		t.Fatalf("EnsureKeys: %v", err)
 	}
 
 	return &testEnv{
-		server:  server,
-		router:  server.Router(),
-		control: control,
-		keyMgr:  keyMgr,
-		rootKey: rootKey.FullKey,
+		server:     server,
+		router:     server.Router(),
+		control:    control,
+		keyMgr:     keyMgr,
+		anonKey:    anonKey.FullKey,
+		serviceKey: serviceKey.FullKey,
 	}
 }
 
@@ -88,24 +108,6 @@ func (e *testEnv) do(t *testing.T, method, path, apiKey string, body any) *httpt
 	return rec
 }
 
-func (e *testEnv) createProject(t *testing.T, slug string) (projectID, anonKey string) {
-	t.Helper()
-	rec := e.do(t, http.MethodPost, "/v1/projects", e.rootKey, CreateProjectRequest{Slug: slug, Name: slug})
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create project %q: status = %d, body = %s", slug, rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		Project struct {
-			ID string `json:"id"`
-		} `json:"project"`
-		AnonKey string `json:"anon_key"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode create project response: %v", err)
-	}
-	return resp.Project.ID, resp.AnonKey
-}
-
 func TestHealth_PublicNoAuth(t *testing.T) {
 	env := newTestEnv(t)
 	rec := env.do(t, http.MethodGet, "/v1/health", "", nil)
@@ -118,9 +120,6 @@ func TestHealth_PublicNoAuth(t *testing.T) {
 	}
 	if resp["status"] != "ok" {
 		t.Fatalf("status field = %v, want \"ok\"", resp["status"])
-	}
-	if _, ok := resp["phone"]; ok {
-		t.Fatal("health response should no longer carry a single global phone field")
 	}
 }
 
@@ -140,92 +139,18 @@ func TestAuth_MissingAndInvalidKey(t *testing.T) {
 
 func TestAuth_WrongTierIsForbidden(t *testing.T) {
 	env := newTestEnv(t)
-	_, anonKey := env.createProject(t, "acme")
 
-	// An anon key must not be able to reach root-only endpoints.
-	rec := env.do(t, http.MethodGet, "/v1/projects", anonKey, nil)
+	// An anon key must not be able to reach service-only endpoints.
+	rec := env.do(t, http.MethodGet, "/v1/numbers", env.anonKey, nil)
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("anon key on root endpoint: status = %d, want 403", rec.Code)
-	}
-}
-
-func TestRootKey_CreateAndListProjects(t *testing.T) {
-	env := newTestEnv(t)
-	projectID, anonKey := env.createProject(t, "acme")
-	if projectID == "" || anonKey == "" {
-		t.Fatal("expected a project id and anon key from project creation")
-	}
-
-	rec := env.do(t, http.MethodGet, "/v1/projects", env.rootKey, nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("list projects: status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var projects []store.Project
-	if err := json.Unmarshal(rec.Body.Bytes(), &projects); err != nil {
-		t.Fatalf("decode projects: %v", err)
-	}
-	found := false
-	for _, p := range projects {
-		if p.ID == projectID {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("created project %s not found in list: %+v", projectID, projects)
-	}
-}
-
-func TestProjectDataIsolation(t *testing.T) {
-	env := newTestEnv(t)
-	projA, keyA := env.createProject(t, "proj-a")
-	_, keyB := env.createProject(t, "proj-b")
-
-	// Bypass WhatsApp entirely (no numbers paired in tests) and seed a
-	// generic message directly into project A's store.
-	rt, err := env.server.registry.Get(context.Background(), projA)
-	if err != nil {
-		t.Fatalf("registry.Get: %v", err)
-	}
-	if err := rt.Store.SaveGenericMessage(context.Background(), &store.GenericMessage{
-		ID:          "msg-1",
-		Phone:       "+15551234567",
-		MessageType: "text",
-		Content:     "hello",
-		Status:      "sent",
-	}); err != nil {
-		t.Fatalf("SaveGenericMessage: %v", err)
-	}
-
-	recA := env.do(t, http.MethodGet, "/v1/messages", keyA, nil)
-	if recA.Code != http.StatusOK {
-		t.Fatalf("list messages as A: status = %d, body = %s", recA.Code, recA.Body.String())
-	}
-	var msgsA []store.GenericMessage
-	if err := json.Unmarshal(recA.Body.Bytes(), &msgsA); err != nil {
-		t.Fatalf("decode messages A: %v", err)
-	}
-	if len(msgsA) != 1 {
-		t.Fatalf("project A should see its own 1 message, got %d", len(msgsA))
-	}
-
-	recB := env.do(t, http.MethodGet, "/v1/messages", keyB, nil)
-	if recB.Code != http.StatusOK {
-		t.Fatalf("list messages as B: status = %d, body = %s", recB.Code, recB.Body.String())
-	}
-	var msgsB []store.GenericMessage
-	if err := json.Unmarshal(recB.Body.Bytes(), &msgsB); err != nil {
-		t.Fatalf("decode messages B: %v", err)
-	}
-	if len(msgsB) != 0 {
-		t.Fatalf("project B must not see project A's messages, got %d", len(msgsB))
+		t.Fatalf("anon key on service-only endpoint: status = %d, want 403", rec.Code)
 	}
 }
 
 func TestOTPSend_SoftFailsWithoutAPairedNumber(t *testing.T) {
 	env := newTestEnv(t)
-	_, anonKey := env.createProject(t, "acme")
 
-	rec := env.do(t, http.MethodPost, "/v1/otp/send", anonKey, OTPSendRequest{Phone: "+15551234567"})
+	rec := env.do(t, http.MethodPost, "/v1/otp/send", env.anonKey, OTPSendRequest{Phone: "+15551234567"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("otp send: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -242,7 +167,7 @@ func TestOTPSend_SoftFailsWithoutAPairedNumber(t *testing.T) {
 }
 
 // TestOTPSend_UsesCloudBackendTemplateWhenConfigured verifies that
-// handleOTPSend prefers rt.Cloud (a Meta Cloud API-backed project) over the
+// handleOTPSend prefers rt.Cloud (a Meta Cloud API-backed instance) over the
 // whatsmeow pool when both are configured, sending the OTP as a template
 // (the only valid way to send one on that backend, see
 // whatsapp.TemplateOTPSender) rather than trying to render + send free
@@ -260,18 +185,13 @@ func TestOTPSend_UsesCloudBackendTemplateWhenConfigured(t *testing.T) {
 	defer metaServer.Close()
 
 	env := newTestEnv(t)
-	projectID, anonKey := env.createProject(t, "acme")
 
-	// Enabling Cloud is normally done via PATCH /v1/projects/{id}/settings
+	// Enabling Cloud is normally done via PATCH /v1/settings
 	// (project.Settings.Cloud) — this test injects rt.Cloud directly since
 	// it's only exercising handleOTPSend's preference for Cloud over
 	// whatsmeow, not the settings-to-Runtime wiring (covered by
 	// core/internal/project/registry_test.go).
-	rt, err := env.server.registry.Get(context.Background(), projectID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	rt.Cloud = whatsapp.NewCloudClient(whatsapp.CloudConfig{
+	env.server.runtime().Cloud = whatsapp.NewCloudClient(whatsapp.CloudConfig{
 		PhoneNumberID:       "test-phone-id",
 		AccessToken:         "test-token",
 		OTPTemplateName:     "otp_verification",
@@ -280,7 +200,7 @@ func TestOTPSend_UsesCloudBackendTemplateWhenConfigured(t *testing.T) {
 		HTTPClient:          metaServer.Client(),
 	})
 
-	rec := env.do(t, http.MethodPost, "/v1/otp/send", anonKey, OTPSendRequest{Phone: "+15551234567"})
+	rec := env.do(t, http.MethodPost, "/v1/otp/send", env.anonKey, OTPSendRequest{Phone: "+15551234567"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("otp send: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -307,13 +227,147 @@ func TestOTPSend_UsesCloudBackendTemplateWhenConfigured(t *testing.T) {
 	}
 }
 
-// TestCloudStatus_ReflectsPerProjectState covers the dashboard's new
-// cloud-status endpoint: disabled by default, and reporting connected once
-// rt.Cloud is set and verified — the same rt.Cloud a real PATCH
-// /v1/projects/{id}/settings would populate (see registry_test.go for that
-// wiring; this test injects rt.Cloud directly, same technique as the OTP
-// send test above).
-func TestCloudStatus_ReflectsPerProjectState(t *testing.T) {
+// TestMessagesSend_PrefersCloudWhenConfigured is a regression test for a
+// Cloud-only instance (no whatsmeow number ever paired): before this,
+// POST /v1/messages/send always went through rt.WA regardless of rt.Cloud,
+// so a Cloud-only instance's OTP sends worked but generic sends didn't —
+// this asserts handleMessagesSend picks Cloud the same way handleOTPSend
+// already does.
+func TestMessagesSend_PrefersCloudWhenConfigured(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	metaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]string{{"id": "wamid.cloud-generic"}},
+		})
+	}))
+	defer metaServer.Close()
+
+	env := newTestEnv(t)
+	env.server.runtime().Cloud = whatsapp.NewCloudClient(whatsapp.CloudConfig{
+		PhoneNumberID: "test-phone-id",
+		AccessToken:   "test-token",
+		BaseURL:       metaServer.URL,
+		HTTPClient:    metaServer.Client(),
+	})
+
+	rec := env.do(t, http.MethodPost, "/v1/messages/send", env.anonKey, SendMessageRequest{
+		Phone: "+15551234567", Type: "text", Text: "your order shipped",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("messages send: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	if gotPath != "/test-phone-id/messages" {
+		t.Fatalf("expected the send to hit /test-phone-id/messages (Cloud), got %q — did it fall through to whatsmeow instead?", gotPath)
+	}
+	if gotBody["type"] != "text" {
+		t.Fatalf("expected a plain text send, got type=%v", gotBody["type"])
+	}
+}
+
+// TestMessagesSend_MediaKindRoutesToTheRightCloudType is a regression test
+// for media parity: a "document" send must hit Cloud with type=document
+// (and the filename), not silently fall back to the old image-only shape.
+func TestMessagesSend_MediaKindRoutesToTheRightCloudType(t *testing.T) {
+	var gotBody map[string]any
+	metaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]string{{"id": "wamid.doc"}},
+		})
+	}))
+	defer metaServer.Close()
+
+	env := newTestEnv(t)
+	env.server.runtime().Cloud = whatsapp.NewCloudClient(whatsapp.CloudConfig{
+		PhoneNumberID: "test-phone-id", AccessToken: "test-token",
+		BaseURL: metaServer.URL, HTTPClient: metaServer.Client(),
+	})
+
+	rec := env.do(t, http.MethodPost, "/v1/messages/send", env.anonKey, SendMessageRequest{
+		Phone: "+15551234567", Type: "document", URL: "https://example.com/report.pdf", Filename: "report.pdf",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("messages send: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if gotBody["type"] != "document" {
+		t.Fatalf("type = %v, want document", gotBody["type"])
+	}
+	doc, _ := gotBody["document"].(map[string]any)
+	if doc["filename"] != "report.pdf" {
+		t.Fatalf("document.filename = %v, want report.pdf", doc["filename"])
+	}
+}
+
+func TestMessagesSend_RejectsUnknownType(t *testing.T) {
+	env := newTestEnv(t)
+	rec := env.do(t, http.MethodPost, "/v1/messages/send", env.anonKey, SendMessageRequest{
+		Phone: "+15551234567", Type: "carrier-pigeon",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for an unrecognized type", rec.Code)
+	}
+}
+
+func TestMessagesSend_LocationRequiresCoordinates(t *testing.T) {
+	env := newTestEnv(t)
+	rec := env.do(t, http.MethodPost, "/v1/messages/send", env.anonKey, SendMessageRequest{
+		Phone: "+15551234567", Type: "location",
+	})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 when latitude/longitude are both zero", rec.Code)
+	}
+}
+
+// TestMessagesSend_LocationRoutesThroughCloudAndStoresContent is a
+// regression test for location parity: Cloud must receive the same
+// type=location payload OTP/text/media already prefer it for, and the
+// generic-message history must store something readable (the place name,
+// falling back to raw coordinates) rather than an empty content field.
+func TestMessagesSend_LocationRoutesThroughCloudAndStoresContent(t *testing.T) {
+	var gotBody map[string]any
+	metaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]string{{"id": "wamid.loc"}},
+		})
+	}))
+	defer metaServer.Close()
+
+	env := newTestEnv(t)
+	env.server.runtime().Cloud = whatsapp.NewCloudClient(whatsapp.CloudConfig{
+		PhoneNumberID: "test-phone-id", AccessToken: "test-token",
+		BaseURL: metaServer.URL, HTTPClient: metaServer.Client(),
+	})
+
+	rec := env.do(t, http.MethodPost, "/v1/messages/send", env.anonKey, SendMessageRequest{
+		Phone: "+15551234567", Type: "location", Latitude: 33.5731, Longitude: -7.5898, Name: "Casablanca",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("messages send: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if gotBody["type"] != "location" {
+		t.Fatalf("expected the send to hit Cloud with type=location, got %v", gotBody["type"])
+	}
+
+	msgs, err := env.server.runtime().Store.GetGenericMessages(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("GetGenericMessages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Content != "Casablanca" || msgs[0].MessageType != "location" {
+		t.Fatalf("stored message = %+v, want content=Casablanca type=location", msgs)
+	}
+}
+
+// TestCloudStatus_ReflectsRuntimeState covers the cloud-status endpoint:
+// disabled by default, and reporting connected once rt.Cloud is set and
+// verified — the same rt.Cloud a real PATCH /v1/settings would populate
+// (see registry_test.go for that wiring; this test injects rt.Cloud
+// directly, same technique as the OTP send test above).
+func TestCloudStatus_ReflectsRuntimeState(t *testing.T) {
 	metaServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{
 			"id": "test-phone-id", "display_phone_number": "+1 555 0100",
@@ -322,9 +376,8 @@ func TestCloudStatus_ReflectsPerProjectState(t *testing.T) {
 	defer metaServer.Close()
 
 	env := newTestEnv(t)
-	projectID, _ := env.createProject(t, "acme")
 
-	rec := env.do(t, http.MethodGet, "/dashboard/api/cloud-status?project_id="+projectID, "", nil)
+	rec := env.do(t, http.MethodGet, "/dashboard/api/cloud-status", "", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("cloud-status: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -336,10 +389,7 @@ func TestCloudStatus_ReflectsPerProjectState(t *testing.T) {
 		t.Fatal("expected Cloud to be disabled by default")
 	}
 
-	rt, err := env.server.registry.Get(context.Background(), projectID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
+	rt := env.server.runtime()
 	rt.Cloud = whatsapp.NewCloudClient(whatsapp.CloudConfig{
 		PhoneNumberID: "test-phone-id",
 		AccessToken:   "test-token",
@@ -350,7 +400,9 @@ func TestCloudStatus_ReflectsPerProjectState(t *testing.T) {
 		t.Fatalf("Connect: %v", err)
 	}
 
-	rec = env.do(t, http.MethodGet, "/dashboard/api/cloud-status?project_id="+projectID, "", nil)
+	// The service-tier API route must reflect the same state as the
+	// unauthenticated dashboard one.
+	rec = env.do(t, http.MethodGet, "/v1/cloud-status", env.serviceKey, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("cloud-status: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -365,20 +417,22 @@ func TestCloudStatus_ReflectsPerProjectState(t *testing.T) {
 	}
 }
 
-// projectCloudSettings reads back a project's persisted Cloud settings
-// directly from control.db, bypassing Registry.Get/load — which would
-// build a real *whatsapp.CloudClient and try to verify it against the
-// actual Meta Graph API over the network (slow, and pointless for a test
-// that's only checking what got persisted).
-func projectCloudSettings(t *testing.T, env *testEnv, projectID string) project.Settings {
+// runtimeSettings reads back the instance's persisted settings directly
+// from control.db, bypassing project.Load — which would build a real
+// *whatsapp.CloudClient and try to verify it against the actual Meta Graph
+// API over the network (slow, and pointless for a test that's only
+// checking what got persisted).
+func runtimeSettings(t *testing.T, env *testEnv) project.Settings {
 	t.Helper()
-	p, err := env.control.GetProjectByID(context.Background(), projectID)
-	if err != nil || p == nil {
-		t.Fatalf("GetProjectByID: %v", err)
+	settingsJSON, err := env.control.GetSettings(context.Background())
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
 	}
 	settings := project.DefaultSettings()
-	if err := json.Unmarshal([]byte(p.SettingsJSON), &settings); err != nil {
-		t.Fatalf("unmarshal settings: %v", err)
+	if settingsJSON != "" {
+		if err := json.Unmarshal([]byte(settingsJSON), &settings); err != nil {
+			t.Fatalf("unmarshal settings: %v", err)
+		}
 	}
 	return settings
 }
@@ -390,9 +444,8 @@ func projectCloudSettings(t *testing.T, env *testEnv, projectID string) project.
 // phone_number_id/template config a re-enable would need.
 func TestDashboardCloudSettings_ConfigureAndDisablePreservesFields(t *testing.T) {
 	env := newTestEnv(t)
-	projectID, _ := env.createProject(t, "acme")
 
-	rec := env.do(t, http.MethodPost, "/dashboard/api/cloud-settings?project_id="+projectID, "", CloudSettingsRequest{
+	rec := env.do(t, http.MethodPost, "/dashboard/api/cloud-settings", "", CloudSettingsRequest{
 		Enabled:             true,
 		PhoneNumberID:       "test-phone-id",
 		AccessToken:         "test-token",
@@ -403,7 +456,7 @@ func TestDashboardCloudSettings_ConfigureAndDisablePreservesFields(t *testing.T)
 		t.Fatalf("configure cloud settings: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	settings := projectCloudSettings(t, env, projectID)
+	settings := runtimeSettings(t, env)
 	if !settings.Cloud.Enabled || settings.Cloud.PhoneNumberID != "test-phone-id" || settings.Cloud.OTPTemplateName != "otp_verification" {
 		t.Fatalf("unexpected settings after enabling: %+v", settings.Cloud)
 	}
@@ -412,7 +465,7 @@ func TestDashboardCloudSettings_ConfigureAndDisablePreservesFields(t *testing.T)
 	// gets it back from the status endpoint) — phone_number_id/template
 	// fields must survive since the dashboard resubmits them from the
 	// status it just displayed.
-	rec = env.do(t, http.MethodPost, "/dashboard/api/cloud-settings?project_id="+projectID, "", CloudSettingsRequest{
+	rec = env.do(t, http.MethodPost, "/dashboard/api/cloud-settings", "", CloudSettingsRequest{
 		Enabled:             false,
 		PhoneNumberID:       settings.Cloud.PhoneNumberID,
 		OTPTemplateName:     settings.Cloud.OTPTemplateName,
@@ -422,7 +475,7 @@ func TestDashboardCloudSettings_ConfigureAndDisablePreservesFields(t *testing.T)
 		t.Fatalf("disable cloud settings: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	settings = projectCloudSettings(t, env, projectID)
+	settings = runtimeSettings(t, env)
 	if settings.Cloud.Enabled {
 		t.Fatal("expected Cloud.Enabled to be false after disabling")
 	}
@@ -434,18 +487,18 @@ func TestDashboardCloudSettings_ConfigureAndDisablePreservesFields(t *testing.T)
 	}
 }
 
-// The "one number per project" rule itself is covered at the source in
+// The "one number per instance" rule itself is covered at the source in
 // core/internal/whatsapp/pool_test.go (TestPool_PairRefusesWhenAlreadyPaired)
 // — Pair() needs a real paired device to trigger, which this package's
 // httptest-based env can't fake without a network round-trip, so the HTTP
 // wiring (errors.Is(err, whatsapp.ErrAlreadyPaired) -> 409 in startPairing)
 // is covered by code review rather than an integration test here.
 
-func TestRegenerateProjectKey(t *testing.T) {
+func TestRegenerateKey(t *testing.T) {
 	env := newTestEnv(t)
-	projA, oldAnonKey := env.createProject(t, "acme")
+	oldAnonKey := env.anonKey
 
-	rec := env.do(t, http.MethodPost, "/v1/projects/"+projA+"/keys/regenerate", env.rootKey, RegenerateKeyRequest{Tier: "anon"})
+	rec := env.do(t, http.MethodPost, "/v1/keys/regenerate", env.serviceKey, RegenerateKeyRequest{Tier: "anon"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("regenerate key: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -470,15 +523,10 @@ func TestRegenerateProjectKey(t *testing.T) {
 	}
 }
 
-func TestProjectSettings_UpdateIsPartialMergeAndTakesEffect(t *testing.T) {
+func TestSettings_UpdateIsPartialMergeAndTakesEffect(t *testing.T) {
 	env := newTestEnv(t)
-	projID, _ := env.createProject(t, "acme")
 
-	// Load once so a Runtime is cached, to prove Evict() picks up the change.
-	rt1, err := env.server.registry.Get(context.Background(), projID)
-	if err != nil {
-		t.Fatalf("registry.Get: %v", err)
-	}
+	rt1 := env.server.runtime()
 	if rt1.Settings.Webhooks.Endpoint != "" {
 		t.Fatalf("expected no webhook endpoint by default, got %q", rt1.Settings.Webhooks.Endpoint)
 	}
@@ -490,7 +538,7 @@ func TestProjectSettings_UpdateIsPartialMergeAndTakesEffect(t *testing.T) {
 	body := map[string]any{
 		"webhooks": map[string]any{"endpoint": "http://localhost:9999/hook", "events": []string{"message.received"}},
 	}
-	rec := env.do(t, http.MethodPatch, "/v1/projects/"+projID+"/settings", env.rootKey, body)
+	rec := env.do(t, http.MethodPatch, "/v1/settings", env.serviceKey, body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update settings: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -514,16 +562,187 @@ func TestProjectSettings_UpdateIsPartialMergeAndTakesEffect(t *testing.T) {
 		t.Fatalf("webhooks.endpoint = %q, want the patched value", updated.Webhooks.Endpoint)
 	}
 
-	// The cached Runtime must have been evicted — Get() rebuilds with the new settings.
-	rt2, err := env.server.registry.Get(context.Background(), projID)
-	if err != nil {
-		t.Fatalf("registry.Get after update: %v", err)
-	}
+	// The Runtime must have been reloaded in place with the new settings.
+	rt2 := env.server.runtime()
 	if rt2 == rt1 {
-		t.Fatal("expected a fresh Runtime after settings update (old one should have been evicted)")
+		t.Fatal("expected a fresh Runtime after settings update (old one should have been replaced)")
 	}
 	if rt2.Settings.Webhooks.Endpoint != "http://localhost:9999/hook" {
 		t.Fatalf("reloaded runtime webhook endpoint = %q, want the patched value", rt2.Settings.Webhooks.Endpoint)
 	}
 }
 
+func TestMetaWebhookVerify_HandshakeMatchesToken(t *testing.T) {
+	env := newTestEnv(t)
+	env.server.runtime().Settings.Cloud.VerifyToken = "my-verify-token"
+
+	rec := env.do(t, http.MethodGet, "/webhooks/meta?hub.mode=subscribe&hub.verify_token=my-verify-token&hub.challenge=xyz123", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("correct token: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != "xyz123" {
+		t.Fatalf("body = %q, want the echoed hub.challenge %q", rec.Body.String(), "xyz123")
+	}
+
+	rec = env.do(t, http.MethodGet, "/webhooks/meta?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=xyz123", "", nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong token: status = %d, want 403", rec.Code)
+	}
+}
+
+func TestMetaWebhookVerify_UnconfiguredTokenAlwaysFails(t *testing.T) {
+	env := newTestEnv(t)
+	// VerifyToken left empty (default) — must never succeed, even with an
+	// empty token in the request, since that would trivially "match".
+	rec := env.do(t, http.MethodGet, "/webhooks/meta?hub.mode=subscribe&hub.verify_token=&hub.challenge=xyz123", "", nil)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 when no verify_token is configured", rec.Code)
+	}
+}
+
+// postMetaWebhook signs body with secret (or leaves it unsigned if secret
+// is "") and POSTs it to /webhooks/meta, mirroring exactly what Meta's own
+// delivery does.
+func postMetaWebhook(t *testing.T, env *testEnv, body []byte, secret string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/meta", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if secret != "" {
+		h := hmac.New(sha256.New, []byte(secret))
+		h.Write(body)
+		req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(h.Sum(nil)))
+	}
+	rec := httptest.NewRecorder()
+	env.router.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestMetaWebhookEvents_RejectsWithoutCloudConfigured(t *testing.T) {
+	env := newTestEnv(t)
+	// Neither rt.Cloud nor AppSecret set — the default state.
+	rec := postMetaWebhook(t, env, []byte(`{"entry":[]}`), "irrelevant")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 when cloud inbound isn't configured", rec.Code)
+	}
+}
+
+func TestMetaWebhookEvents_SignatureVerificationGatesProcessing(t *testing.T) {
+	env := newTestEnv(t)
+	rt := env.server.runtime()
+	rt.Settings.Cloud.AppSecret = "test-app-secret"
+	rt.Cloud = whatsapp.NewCloudClient(whatsapp.CloudConfig{PhoneNumberID: "test-phone-id", AccessToken: "test-token"})
+
+	body := []byte(`{
+		"entry": [{
+			"changes": [{
+				"value": {
+					"contacts": [{"profile": {"name": "Jane"}, "wa_id": "212600000000"}],
+					"messages": [{"from": "212600000000", "id": "wamid.ABC", "timestamp": "1700000000", "type": "text", "text": {"body": "hello"}}]
+				}
+			}]
+		}]
+	}`)
+
+	// Wrong secret — rejected, nothing pushed.
+	rec := postMetaWebhook(t, env, body, "wrong-secret")
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong signature: status = %d, want 401, body = %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case evt := <-rt.Cloud.Events():
+		t.Fatalf("expected nothing pushed to Events() after a rejected signature, got %+v", evt)
+	default:
+	}
+
+	// Correct secret — accepted, the parsed inbound event is pushed onto
+	// rt.Cloud.Events() (read directly here rather than depending on the
+	// background StartEventForwarder goroutine's timing).
+	rec = postMetaWebhook(t, env, body, "test-app-secret")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("correct signature: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case evt := <-rt.Cloud.Events():
+		if evt.Type != whatsapp.EventMessageReceived {
+			t.Fatalf("pushed event Type = %q, want %q", evt.Type, whatsapp.EventMessageReceived)
+		}
+		if evt.Phone != "212600000000" || evt.MessageID != "wamid.ABC" {
+			t.Fatalf("pushed event = %+v, want phone 212600000000 / message id wamid.ABC", evt)
+		}
+	default:
+		t.Fatal("expected the parsed inbound event to be pushed onto rt.Cloud.Events()")
+	}
+}
+
+// TestHandleGetMedia_RoundTrip is a regression test for GET
+// /v1/media/{message_id}: it must serve back exactly the bytes
+// routeInboundMessage wrote to MediaDir, with the mimetype recorded on the
+// InboundMessage row.
+func TestHandleGetMedia_RoundTrip(t *testing.T) {
+	env := newTestEnv(t)
+	rt := env.server.runtime()
+
+	conv, err := rt.Store.GetOrCreateConversation(context.Background(), "212600000000")
+	if err != nil {
+		t.Fatalf("GetOrCreateConversation: %v", err)
+	}
+	if err := rt.Store.InsertInboundMessage(context.Background(), &store.InboundMessage{
+		ConversationID: conv.ID,
+		Phone:          "212600000000",
+		Content:        "look at this",
+		MessageID:      "wamid.IMG1",
+		MediaKind:      string(whatsapp.MediaKindImage),
+		MediaMimeType:  "image/jpeg",
+	}); err != nil {
+		t.Fatalf("InsertInboundMessage: %v", err)
+	}
+	want := []byte("fake-jpeg-bytes")
+	if err := os.WriteFile(filepath.Join(rt.MediaDir, "wamid.IMG1"), want, 0600); err != nil {
+		t.Fatalf("write media file: %v", err)
+	}
+
+	rec := env.do(t, http.MethodGet, "/v1/media/wamid.IMG1", env.anonKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "image/jpeg" {
+		t.Fatalf("Content-Type = %q, want %q", ct, "image/jpeg")
+	}
+	if rec.Body.String() != string(want) {
+		t.Fatalf("body = %q, want %q", rec.Body.String(), want)
+	}
+}
+
+// TestHandleGetMedia_NotFound covers both 404 cases: no such message at
+// all, and a media message whose row exists but whose file never made it
+// to disk (a failed download/write at receive time — documented, not a
+// server error).
+func TestHandleGetMedia_NotFound(t *testing.T) {
+	env := newTestEnv(t)
+	rt := env.server.runtime()
+
+	rec := env.do(t, http.MethodGet, "/v1/media/does-not-exist", env.anonKey, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown message id: status = %d, want 404", rec.Code)
+	}
+
+	conv, err := rt.Store.GetOrCreateConversation(context.Background(), "212600000000")
+	if err != nil {
+		t.Fatalf("GetOrCreateConversation: %v", err)
+	}
+	if err := rt.Store.InsertInboundMessage(context.Background(), &store.InboundMessage{
+		ConversationID: conv.ID,
+		Phone:          "212600000000",
+		MessageID:      "wamid.IMG2",
+		MediaKind:      string(whatsapp.MediaKindImage),
+		MediaMimeType:  "image/jpeg",
+	}); err != nil {
+		t.Fatalf("InsertInboundMessage: %v", err)
+	}
+	// No file written to MediaDir for wamid.IMG2 — simulates a download
+	// failure at receive time.
+	rec = env.do(t, http.MethodGet, "/v1/media/wamid.IMG2", env.anonKey, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("row without a file: status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+}

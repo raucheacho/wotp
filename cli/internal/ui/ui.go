@@ -228,8 +228,8 @@ func DoubleConfirmPrompt(msg, confirmWord string) bool {
 }
 
 // PrintStatus displays a formatted status output. Per-number connection
-// state lives per-project now (`wotp project keys <slug>`) — this only
-// reports whether the instance's API process itself is up.
+// state is in the dashboard's Numbers screen — this only reports whether
+// the instance's API process itself is up.
 func PrintStatus(status string, uptimeSeconds int64) {
 	Blank()
 	Title("Wotp Status")

@@ -57,6 +57,12 @@ func main() {
         log.Fatal(err)
     }
 
+    // Send a location
+    _, err = client.SendLocation(ctx, "+212600000000", 33.5731, -7.5898, &wotp.LocationOptions{Name: "Casablanca"})
+    if err != nil {
+        log.Fatal(err)
+    }
+
     // Show a typing indicator
     if err := client.SetPresence(ctx, "+212600000000", wotp.PresenceTyping); err != nil {
         log.Fatal(err)
@@ -68,6 +74,22 @@ func main() {
         log.Fatal(err)
     }
     fmt.Printf("Chats: %d\n", len(chats))
+
+    // Read a conversation thread and take it over
+    convs, err := client.ListConversations(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+    if len(convs) > 0 {
+        msgs, _ := client.GetConversationMessages(ctx, convs[0].ID)
+        fmt.Printf("Messages: %d\n", len(msgs))
+        _ = client.TakeoverConversation(ctx, convs[0].ID, &wotp.ConversationStateChangeRequest{Actor: "agent-1"})
+    }
+
+    // Download media a contact sent in (image/video/audio/document)
+    if media, err := client.GetMedia(ctx, "wamid.XXX"); err == nil {
+        fmt.Printf("Downloaded %d bytes (%s)\n", len(media.Data), media.ContentType)
+    }
 }
 ```
 
@@ -122,17 +144,27 @@ health, err := client.Health(ctx)
 // health.Status, health.UptimeSeconds
 ```
 
-### `client.SendText(ctx, phone, text)` · `client.SendMedia(ctx, phone, media)`
+### `client.SendText(ctx, phone, text)` · `client.SendMedia(ctx, phone, media)` · `client.SendLocation(ctx, phone, lat, lng, opts)`
 
-Send a text or media message. Both return `*MessageResponse` with `.MessageID` — a failed send comes back as an `error`, not a `Success` field.
+Send a text, media, or location message. All three return `*MessageResponse` with `.MessageID` — a failed send comes back as an `error`, not a `Success` field.
+
+`SendMediaRequest.Kind` is one of `wotp.MediaKindImage` (default), `MediaKindVideo`, `MediaKindAudio`, `MediaKindDocument` — set `URL` or `Base64`, plus `Caption`/`Filename` (document only). `SendLocation`'s `opts *wotp.LocationOptions` may be `nil` if you're only sending coordinates.
 
 ### `client.GetChats(ctx)`
 
-Lists the WhatsApp contacts visible to the project's connected numbers as `[]Chat`, each with `.JID` and `.Name`.
+Lists the WhatsApp contacts visible to the connected number as `[]Chat`, each with `.JID` and `.Name`.
 
 ### `client.SetPresence(ctx, phone, state)`
 
 Sets the typing indicator for a chat without sending a message. `state` is `wotp.PresenceTyping` or `wotp.PresencePaused`.
+
+### Conversations & takeover
+
+`client.ListConversations(ctx)`, `client.GetConversation(ctx, id)`, `client.GetConversationMessages(ctx, id)` — read a contact's conversation thread (inbound replies, outbound sends, and OTP sends merged chronologically). `client.TakeoverConversation(ctx, id, opts)` / `client.ResumeConversation(ctx, id, opts)` flip `State` between `wotp.ConversationStateBot` and `wotp.ConversationStateHuman`; `opts *wotp.ConversationStateChangeRequest` (actor/reason) may be `nil`.
+
+### `client.GetMedia(ctx, messageID)`
+
+Downloads the raw bytes of an inbound image/video/audio/document message wotp captured when it arrived — returns `*MediaFile{Data []byte, ContentType string}`, ready to feed to OCR, Whisper, or wherever else your bot needs it. Returns a `*WotpError` with `StatusCode` 404 if the message wasn't media, or if the download failed at receive time.
 
 ## Error Handling
 

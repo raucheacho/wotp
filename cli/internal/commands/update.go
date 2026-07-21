@@ -73,7 +73,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	ui.Success("Container started")
 
 	// Read API keys
-	anonKey, serviceKey, _, err := keys.ReadEnvFile(config.EnvPath(projectDir))
+	anonKey, serviceKey, err := keys.ReadEnvFile(config.EnvPath(projectDir))
 	if err != nil {
 		return fmt.Errorf("reading API keys: %w", err)
 	}
